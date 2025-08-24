@@ -471,7 +471,7 @@ require_once 'bootstrap.php';
                         </div>
                         
                         <div class="text-center">
-                            <a href="config_manager.php" class="btn btn-primary btn-lg">
+                            <a href="config_interface.php" class="btn btn-primary btn-lg">
                                 <i class="bi bi-gear-wide-connected"></i>
                                 Acessar Painel de Configurações
                             </a>
@@ -793,6 +793,9 @@ require_once 'bootstrap.php';
                 case 'auditoria':
                     loadAuditLog();
                     break;
+                case 'usuarios':
+                    loadUsersList();
+                    break;
             }
         }
         
@@ -864,7 +867,7 @@ require_once 'bootstrap.php';
                                             <li><a class="dropdown-item" href="#" onclick="editPolo(${polo.id})">
                                                 <i class="bi bi-pencil"></i> Editar
                                             </a></li>
-                                            <li><a class="dropdown-item" href="config_manager.php?polo=${polo.id}">
+                                            <li><a class="dropdown-item" href="config_interface.php?polo=${polo.id}">
                                                 <i class="bi bi-gear"></i> Configurar APIs
                                             </a></li>
                                             <li><hr class="dropdown-divider"></li>
@@ -1162,6 +1165,352 @@ require_once 'bootstrap.php';
             }, 5000);
         }
         
+
+        // Carregar lista de usuários
+function loadUsersList() {
+    const container = document.getElementById('users-list');
+    
+    if (!container) {
+        console.warn('Container users-list não encontrado');
+        return;
+    }
+    
+    // Mostrar loading
+    container.innerHTML = `
+        <div class="text-center p-4">
+            <div class="spinner-border text-primary mb-3" role="status">
+                <span class="visually-hidden">Carregando...</span>
+            </div>
+            <p class="text-muted">Carregando usuários...</p>
+        </div>
+    `;
+    
+    fetch('api.php?action=list-users')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                displayUsersList(data.data);
+            } else {
+                container.innerHTML = `
+                    <div class="alert alert-danger">
+                        <h6><i class="bi bi-exclamation-triangle"></i> Erro ao Carregar Usuários</h6>
+                        <p>${data.error}</p>
+                        <button class="btn btn-outline-danger btn-sm" onclick="loadUsersList()">
+                            <i class="bi bi-arrow-clockwise"></i> Tentar Novamente
+                        </button>
+                    </div>
+                `;
+            }
+        })
+        .catch(error => {
+            container.innerHTML = `
+                <div class="alert alert-warning">
+                    <h6><i class="bi bi-wifi-off"></i> Erro de Conexão</h6>
+                    <p>Não foi possível carregar os usuários: ${error.message}</p>
+                    <button class="btn btn-outline-warning btn-sm" onclick="loadUsersList()">
+                        <i class="bi bi-arrow-clockwise"></i> Tentar Novamente
+                    </button>
+                </div>
+            `;
+        });
+}
+
+// Exibir lista de usuários
+function displayUsersList(data) {
+    const container = document.getElementById('users-list');
+    const usuarios = data.usuarios || [];
+    const summary = data.summary || {};
+    
+    if (usuarios.length === 0) {
+        container.innerHTML = `
+            <div class="text-center py-5">
+                <i class="bi bi-people display-1 text-muted"></i>
+                <h4 class="mt-3 text-muted">Nenhum usuário encontrado</h4>
+                <p class="text-muted">Clique em "Novo Usuário" para criar o primeiro.</p>
+            </div>
+        `;
+        return;
+    }
+    
+    let html = `
+        <!-- Resumo -->
+        <div class="row mb-4">
+            <div class="col-md-12">
+                <div class="card bg-light">
+                    <div class="card-body">
+                        <div class="row text-center">
+                            <div class="col-md-2">
+                                <h6>Total</h6>
+                                <h4>${summary.total_usuarios || usuarios.length}</h4>
+                            </div>
+                            <div class="col-md-2">
+                                <h6>Ativos</h6>
+                                <h4 class="text-success">${summary.usuarios_ativos || 0}</h4>
+                            </div>
+                            <div class="col-md-2">
+                                <h6>Online</h6>
+                                <h4 class="text-info">${summary.usuarios_online || 0}</h4>
+                            </div>
+                            <div class="col-md-2">
+                                <h6>Masters</h6>
+                                <h4 class="text-primary">${summary.masters || 0}</h4>
+                            </div>
+                            <div class="col-md-2">
+                                <h6>Admin Polos</h6>
+                                <h4 class="text-warning">${summary.admin_polos || 0}</h4>
+                            </div>
+                            <div class="col-md-2">
+                                <h6>Operadores</h6>
+                                <h4 class="text-secondary">${summary.operadores || 0}</h4>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Lista de Usuários -->
+        <div class="row">
+    `;
+    
+    usuarios.forEach(usuario => {
+        const statusClass = usuario.is_active ? 'success' : 'secondary';
+        const statusText = usuario.is_active ? 'Ativo' : 'Inativo';
+        const onlineClass = usuario.status_atividade === 'online' ? 'success' : 'secondary';
+        const onlineIcon = usuario.status_atividade === 'online' ? 'circle-fill' : 'circle';
+        
+        // Cor do card baseada no tipo
+        const typeColors = {
+            'master': 'border-danger',
+            'admin_polo': 'border-warning', 
+            'operador': 'border-info'
+        };
+        const cardClass = typeColors[usuario.tipo] || 'border-secondary';
+        
+        html += `
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card h-100 ${cardClass}">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div class="flex-grow-1">
+                                <h6 class="card-title mb-1 d-flex align-items-center">
+                                    ${usuario.nome}
+                                    <i class="bi bi-${onlineIcon} text-${onlineClass} ms-2" title="${usuario.status_atividade}"></i>
+                                </h6>
+                                <p class="card-text text-muted mb-1">
+                                    <i class="bi bi-envelope"></i> ${usuario.email}
+                                </p>
+                                ${usuario.polo_nome ? `<p class="card-text text-muted mb-1"><i class="bi bi-building"></i> ${usuario.polo_nome}</p>` : ''}
+                            </div>
+                            
+                            <div class="dropdown">
+                                <button class="btn btn-sm btn-outline-secondary dropdown-toggle" 
+                                        type="button" data-bs-toggle="dropdown">
+                                    <i class="bi bi-three-dots-vertical"></i>
+                                </button>
+                                <ul class="dropdown-menu dropdown-menu-end">
+                                    <li><a class="dropdown-item" href="#" onclick="editUser(${usuario.id})">
+                                        <i class="bi bi-pencil"></i> Editar
+                                    </a></li>
+                                    <li><a class="dropdown-item" href="#" onclick="viewUserDetails(${usuario.id})">
+                                        <i class="bi bi-eye"></i> Ver Detalhes
+                                    </a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item text-${usuario.is_active ? 'warning' : 'success'}" 
+                                           href="#" onclick="toggleUserStatus(${usuario.id}, ${usuario.is_active})">
+                                        <i class="bi bi-${usuario.is_active ? 'pause' : 'play'}-circle"></i> 
+                                        ${usuario.is_active ? 'Desativar' : 'Ativar'}
+                                    </a></li>
+                                    ${usuario.tipo !== 'master' ? `
+                                    <li><a class="dropdown-item text-danger" 
+                                           href="#" onclick="resetUserPassword(${usuario.id})">
+                                        <i class="bi bi-key"></i> Resetar Senha
+                                    </a></li>
+                                    ` : ''}
+                                </ul>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <span class="badge bg-${getTypeBadgeColor(usuario.tipo)} me-2">
+                                ${usuario.tipo_formatado || usuario.tipo}
+                            </span>
+                            <span class="badge bg-${statusClass}">
+                                ${statusText}
+                            </span>
+                        </div>
+                        
+                        <div class="row text-center small">
+                            <div class="col-6">
+                                <div class="text-muted">Último Login</div>
+                                <div class="fw-bold">${usuario.ultimo_login_formatado || 'Nunca'}</div>
+                            </div>
+                            <div class="col-6">
+                                <div class="text-muted">Tentativas</div>
+                                <div class="fw-bold">${usuario.tentativas_login || 0}</div>
+                            </div>
+                        </div>
+                        
+                        ${usuario.bloqueado ? `
+                        <div class="alert alert-warning mt-2 py-1 px-2 small">
+                            <i class="bi bi-exclamation-triangle"></i> Usuário bloqueado
+                        </div>
+                        ` : ''}
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+// Função auxiliar para cor do badge do tipo
+function getTypeBadgeColor(tipo) {
+    const colors = {
+        'master': 'danger',
+        'admin_polo': 'warning',
+        'operador': 'info'
+    };
+    return colors[tipo] || 'secondary';
+}
+
+// Alternar status do usuário
+function toggleUserStatus(userId, currentStatus) {
+    const action = currentStatus ? 'desativar' : 'ativar';
+    const confirmMessage = `Confirma ${action} este usuário?`;
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('action', 'toggle-user-status');
+    formData.append('user_id', userId);
+    
+    fetch('api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.error || `Usuário ${action} com sucesso!`);
+            loadUsersList(); // Recarregar lista
+        } else {
+            showAlert('danger', 'Erro: ' + data.error);
+        }
+    })
+    .catch(error => {
+        showAlert('danger', 'Erro de conexão: ' + error.message);
+    });
+}
+
+// Ver detalhes do usuário
+function viewUserDetails(userId) {
+    showAlert('info', 'Funcionalidade em desenvolvimento...');
+    // TODO: Implementar modal com detalhes completos do usuário
+}
+
+// Editar usuário
+function editUser(userId) {
+    showAlert('info', 'Funcionalidade em desenvolvimento...');
+    // TODO: Implementar modal de edição
+}
+
+// Resetar senha do usuário
+function resetUserPassword(userId) {
+    const novaSenha = prompt('Digite a nova senha (mínimo 6 caracteres):');
+    
+    if (!novaSenha || novaSenha.length < 6) {
+        showAlert('warning', 'Senha deve ter pelo menos 6 caracteres');
+        return;
+    }
+    
+    if (!confirm('Confirma a alteração da senha? O usuário será desconectado.')) {
+        return;
+    }
+    
+    const formData = new FormData();
+    formData.append('action', 'reset-user-password');
+    formData.append('user_id', userId);
+    formData.append('nova_senha', novaSenha);
+    
+    fetch('api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            showAlert('success', data.error || 'Senha alterada com sucesso!');
+            loadUsersList();
+        } else {
+            showAlert('danger', 'Erro: ' + data.error);
+        }
+    })
+    .catch(error => {
+        showAlert('danger', 'Erro de conexão: ' + error.message);
+    });
+}
+
+// Formulário criar usuário (atualizar o event listener existente)
+document.addEventListener('DOMContentLoaded', function() {
+    const createUserForm = document.getElementById('createUserForm');
+    if (createUserForm) {
+        createUserForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            
+            const formData = new FormData(this);
+            formData.append('action', 'create-user');
+            
+            const submitBtn = this.querySelector('button[type="submit"]');
+            const originalText = submitBtn.innerHTML;
+            submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Criando...';
+            submitBtn.disabled = true;
+            
+            fetch('api.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showAlert('success', data.error || 'Usuário criado com sucesso!');
+                    bootstrap.Modal.getInstance(document.getElementById('createUserModal')).hide();
+                    this.reset();
+                    
+                    // Recarregar lista se estiver na seção de usuários
+                    if (document.querySelector('[data-section="usuarios"]').classList.contains('active')) {
+                        loadUsersList();
+                    }
+                } else {
+                    showAlert('danger', 'Erro ao criar usuário: ' + data.error);
+                }
+            })
+            .catch(error => {
+                showAlert('danger', 'Erro de conexão: ' + error.message);
+            })
+            .finally(() => {
+                submitBtn.innerHTML = originalText;
+                submitBtn.disabled = false;
+            });
+        });
+    }
+});
+
+// ===== ATUALIZAR A FUNÇÃO loadSectionData EXISTENTE =====
+// Encontre a função loadSectionData e adicione esta linha no switch:
+
+/*
+case 'usuarios':
+    loadUsersList();
+    break;
+*/
+
+
+
         // Inicialização da página
         document.addEventListener('DOMContentLoaded', function() {
             // Carregar atividade recente

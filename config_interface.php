@@ -1,9 +1,113 @@
+<?php
+/**
+ * Interface Web para Configurações ASAAS
+ * Arquivo: config_interface.php
+ */
+
+require_once 'bootstrap.php';
+
+// Verificar autenticação
+if (!$auth || !$auth->isLogado()) {
+    safeRedirect('login.php');
+}
+
+$usuario = $auth->getUsuarioAtual();
+
+// Verificar se tem permissão para configurar
+if (!$auth->isMaster() && !$auth->isAdminPolo()) {
+    showError('Acesso negado. Você não tem permissão para acessar as configurações.', 'Acesso Negado');
+    exit;
+}
+
+$message = '';
+$messageType = '';
+
+// Processar ações
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    
+    try {
+        switch ($action) {
+            case 'update_config':
+                $poloId = (int)$_POST['polo_id'];
+                
+                // Verificar permissão para este polo
+                if (!$auth->isMaster() && $poloId !== $usuario['polo_id']) {
+                    throw new Exception('Você não tem permissão para configurar este polo');
+                }
+                
+                $config = [
+                    'environment' => $_POST['environment'],
+                    'production_key' => trim($_POST['production_key'] ?? ''),
+                    'sandbox_key' => trim($_POST['sandbox_key'] ?? ''),
+                    'webhook_token' => trim($_POST['webhook_token'] ?? '')
+                ];
+                
+                $configManager->updateAsaasConfig($poloId, $config);
+                $message = 'Configurações atualizadas com sucesso!';
+                $messageType = 'success';
+                break;
+                
+            case 'test_config':
+                $poloId = (int)$_POST['polo_id'];
+                $environment = $_POST['test_environment'] ?? null;
+                
+                if (!$auth->isMaster() && $poloId !== $usuario['polo_id']) {
+                    throw new Exception('Você não tem permissão para testar este polo');
+                }
+                
+                $result = $configManager->testAsaasConfig($poloId, $environment);
+                
+                if ($result['success']) {
+                    $message = 'Teste realizado com sucesso: ' . $result['message'];
+                    $messageType = 'success';
+                } else {
+                    $message = 'Falha no teste: ' . $result['message'];
+                    $messageType = 'danger';
+                }
+                break;
+                
+            case 'create_polo':
+                if (!$auth->isMaster()) {
+                    throw new Exception('Apenas Master Admin pode criar polos');
+                }
+                
+                $dados = [
+                    'nome' => trim($_POST['nome']),
+                    'codigo' => strtoupper(trim($_POST['codigo'])),
+                    'cidade' => trim($_POST['cidade']),
+                    'estado' => strtoupper(trim($_POST['estado'])),
+                    'endereco' => trim($_POST['endereco'] ?? ''),
+                    'telefone' => trim($_POST['telefone'] ?? ''),
+                    'email' => trim($_POST['email'] ?? ''),
+                    'asaas_environment' => $_POST['environment'] ?? 'sandbox'
+                ];
+                
+                $poloId = $configManager->createPolo($dados);
+                $message = 'Polo criado com sucesso! ID: ' . $poloId;
+                $messageType = 'success';
+                break;
+        }
+    } catch (Exception $e) {
+        $message = 'Erro: ' . $e->getMessage();
+        $messageType = 'danger';
+    }
+}
+
+// Obter lista de polos baseado na permissão do usuário
+if ($auth->isMaster()) {
+    $polos = $configManager->listarPolos(true);
+} else {
+    // Admin de polo vê apenas seu polo
+    $polos = [$configManager->getPoloConfig($usuario['polo_id'])];
+}
+?>
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configurações - Sistema IMEP Split ASAAS</title>
+    <title>Configurações ASAAS - Sistema IMEP Split</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
@@ -70,87 +174,6 @@
     </style>
 </head>
 <body class="bg-light">
-    <?php
-    require_once 'config_api.php';
-    require_once 'config.php';
-    require_once 'auth.php';
-    require_once 'config_manager.php';
-    
-    // Verificar autenticação
-    $auth->requireLogin();
-    
-    $usuario = $auth->getUsuarioAtual();
-    $configManager = new ConfigManager();
-    
-    $message = '';
-    $messageType = '';
-    
-    // Processar ações
-    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        $action = $_POST['action'] ?? '';
-        
-        try {
-            switch ($action) {
-                case 'update_config':
-                    $poloId = (int)$_POST['polo_id'];
-                    $config = [
-                        'environment' => $_POST['environment'],
-                        'production_key' => trim($_POST['production_key'] ?? ''),
-                        'sandbox_key' => trim($_POST['sandbox_key'] ?? ''),
-                        'webhook_token' => trim($_POST['webhook_token'] ?? '')
-                    ];
-                    
-                    $configManager->updateAsaasConfig($poloId, $config);
-                    $message = 'Configurações atualizadas com sucesso!';
-                    $messageType = 'success';
-                    break;
-                    
-                case 'test_config':
-                    $poloId = (int)$_POST['polo_id'];
-                    $environment = $_POST['test_environment'] ?? null;
-                    
-                    $result = $configManager->testAsaasConfig($poloId, $environment);
-                    
-                    if ($result['success']) {
-                        $message = 'Teste realizado com sucesso: ' . $result['message'];
-                        $messageType = 'success';
-                    } else {
-                        $message = 'Falha no teste: ' . $result['message'];
-                        $messageType = 'danger';
-                    }
-                    break;
-                    
-                case 'create_polo':
-                    if (!$auth->isMaster()) {
-                        throw new Exception('Acesso negado');
-                    }
-                    
-                    $dados = [
-                        'nome' => trim($_POST['nome']),
-                        'codigo' => strtoupper(trim($_POST['codigo'])),
-                        'cidade' => trim($_POST['cidade']),
-                        'estado' => strtoupper(trim($_POST['estado'])),
-                        'endereco' => trim($_POST['endereco'] ?? ''),
-                        'telefone' => trim($_POST['telefone'] ?? ''),
-                        'email' => trim($_POST['email'] ?? ''),
-                        'asaas_environment' => $_POST['environment'] ?? 'sandbox'
-                    ];
-                    
-                    $poloId = $configManager->createPolo($dados);
-                    $message = 'Polo criado com sucesso! ID: ' . $poloId;
-                    $messageType = 'success';
-                    break;
-            }
-        } catch (Exception $e) {
-            $message = 'Erro: ' . $e->getMessage();
-            $messageType = 'danger';
-        }
-    }
-    
-    // Obter lista de polos
-    $polos = $configManager->listPolos();
-    ?>
-
     <div class="container-fluid py-4">
         <!-- Header -->
         <div class="row mb-4">
@@ -159,7 +182,7 @@
                     <div>
                         <h2><i class="bi bi-gear-fill"></i> Configurações ASAAS</h2>
                         <p class="text-muted mb-0">
-                            Gerencie as configurações de API do ASAAS para cada polo
+                            Gerencie as configurações de API do ASAAS
                             <?php if (!$auth->isMaster()): ?>
                                 - Polo: <?php echo htmlspecialchars($usuario['polo_nome']); ?>
                             <?php endif; ?>
@@ -235,7 +258,7 @@
                             <div class="col-lg-3">
                                 <div class="stats-card p-3 mb-3">
                                     <h6><i class="bi bi-bar-chart"></i> Estatísticas</h6>
-                                    <div class="row text-center">
+                                    <div class="row text-center mt-4">
                                         <div class="col-6">
                                             <div class="h5 mb-0"><?php echo $stats['usuarios_ativos']; ?></div>
                                             <small>Usuários</small>
@@ -643,14 +666,27 @@
                 feedback.textContent = 'Formato inválido. Deve começar com $aact_';
             } else {
                 input.classList.remove('is-invalid');
+                const feedback = input.parentNode.querySelector('.invalid-feedback');
+                if (feedback) {
+                    feedback.remove();
+                }
             }
         }
         
-        // Adicionar validação aos campos de API Key
+        // Inicialização da página
         document.addEventListener('DOMContentLoaded', function() {
+            // Adicionar validação aos campos de API Key
             const apiKeyInputs = document.querySelectorAll('.api-key-input[name*="key"]');
             apiKeyInputs.forEach(input => {
                 input.addEventListener('blur', () => validateApiKey(input));
+                input.addEventListener('input', () => {
+                    // Remover feedback de erro enquanto digita
+                    input.classList.remove('is-invalid');
+                    const feedback = input.parentNode.querySelector('.invalid-feedback');
+                    if (feedback) {
+                        feedback.remove();
+                    }
+                });
             });
             
             // Auto uppercase no código do polo
@@ -660,27 +696,144 @@
                     this.value = this.value.toUpperCase();
                 });
             }
-        });
-        
-        // Confirmação antes de salvar configurações de produção
-        document.querySelectorAll('form').forEach(form => {
-            form.addEventListener('submit', function(e) {
-                const environmentSelect = this.querySelector('select[name="environment"]');
-                const productionKeyInput = this.querySelector('input[name="production_key"]');
-                
-                if (environmentSelect && environmentSelect.value === 'production') {
-                    if (!productionKeyInput || !productionKeyInput.value.trim()) {
+            
+            // Validação dos formulários
+            const forms = document.querySelectorAll('form');
+            forms.forEach(form => {
+                form.addEventListener('submit', function(e) {
+                    const environmentSelect = this.querySelector('select[name="environment"]');
+                    const productionKeyInput = this.querySelector('input[name="production_key"]');
+                    
+                    // Verificar se está tentando usar produção sem API key
+                    if (environmentSelect && environmentSelect.value === 'production') {
+                        if (!productionKeyInput || !productionKeyInput.value.trim()) {
+                            e.preventDefault();
+                            alert('ERRO: Não é possível usar ambiente de PRODUÇÃO sem configurar a API Key de produção!');
+                            return false;
+                        }
+                        
+                        // Confirmação final para produção
+                        if (!confirm('CONFIRMAÇÃO FINAL:\n\nVocê está salvando configurações de PRODUÇÃO!\n\nEste polo processará pagamentos REAIS.\n\nConfirma?')) {
+                            e.preventDefault();
+                            return false;
+                        }
+                    }
+                    
+                    // Validar formato das API Keys antes de enviar
+                    const apiKeys = this.querySelectorAll('.api-key-input[name*="key"]');
+                    let hasInvalidKey = false;
+                    
+                    apiKeys.forEach(input => {
+                        const value = input.value.trim();
+                        if (value && !/^\$aact_[a-zA-Z0-9_]+$/.test(value)) {
+                            validateApiKey(input);
+                            hasInvalidKey = true;
+                        }
+                    });
+                    
+                    if (hasInvalidKey) {
                         e.preventDefault();
-                        alert('ERRO: Não é possível usar ambiente de PRODUÇÃO sem configurar a API Key de produção!');
+                        alert('Por favor, corrija os erros nos campos de API Key antes de continuar.');
                         return false;
                     }
                     
-                    if (!confirm('CONFIRMAÇÃO FINAL:\n\nVocê está salvando configurações de PRODUÇÃO!\n\nEste polo processará pagamentos REAIS.\n\nConfirma?')) {
-                        e.preventDefault();
-                        return false;
+                    // Mostrar loading no botão
+                    const submitBtn = this.querySelector('button[type="submit"]');
+                    if (submitBtn) {
+                        const originalText = submitBtn.innerHTML;
+                        submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Salvando...';
+                        submitBtn.disabled = true;
+                        
+                        // Restaurar botão se houver erro (timeout de segurança)
+                        setTimeout(() => {
+                            submitBtn.innerHTML = originalText;
+                            submitBtn.disabled = false;
+                        }, 5000);
+                    }
+                });
+            });
+        });
+        
+        // Função para mostrar tooltips informativos
+        function showTooltip(element, message) {
+            const tooltip = document.createElement('div');
+            tooltip.className = 'tooltip bs-tooltip-top show';
+            tooltip.innerHTML = `
+                <div class="tooltip-arrow"></div>
+                <div class="tooltip-inner">${message}</div>
+            `;
+            
+            document.body.appendChild(tooltip);
+            
+            const rect = element.getBoundingClientRect();
+            tooltip.style.position = 'fixed';
+            tooltip.style.left = rect.left + (rect.width / 2) - (tooltip.offsetWidth / 2) + 'px';
+            tooltip.style.top = rect.top - tooltip.offsetHeight - 8 + 'px';
+            tooltip.style.zIndex = '9999';
+            
+            // Remover após 3 segundos
+            setTimeout(() => {
+                if (tooltip.parentNode) {
+                    tooltip.parentNode.removeChild(tooltip);
+                }
+            }, 3000);
+        }
+        
+        // Copiar informações úteis
+        function copyWebhookUrl(poloId) {
+            const url = `${window.location.origin}/webhook.php`;
+            
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(url).then(() => {
+                    showTooltip(event.target, 'URL copiada para a área de transferência!');
+                });
+            } else {
+                // Fallback para navegadores mais antigos
+                const textarea = document.createElement('textarea');
+                textarea.value = url;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                showTooltip(event.target, 'URL copiada!');
+            }
+        }
+        
+        // Atalhos de teclado
+        document.addEventListener('keydown', function(e) {
+            // Ctrl + S para salvar (primeira form visível)
+            if (e.ctrlKey && e.key === 's') {
+                e.preventDefault();
+                const firstForm = document.querySelector('form:not([style*="display: none"])');
+                if (firstForm) {
+                    firstForm.submit();
+                }
+            }
+            
+            // Esc para fechar modais
+            if (e.key === 'Escape') {
+                const openModal = document.querySelector('.modal.show');
+                if (openModal) {
+                    const modal = bootstrap.Modal.getInstance(openModal);
+                    if (modal) {
+                        modal.hide();
                     }
                 }
-            });
+            }
+        });
+        
+        // Log para debug
+        console.log('🔧 Interface de Configurações ASAAS carregada');
+        console.log('💡 Dicas:');
+        console.log('   Ctrl + S: Salvar configurações');
+        console.log('   Esc: Fechar modal');
+        
+        // Verificar se há configurações pendentes
+        document.addEventListener('DOMContentLoaded', function() {
+            const unconfiguredPolos = document.querySelectorAll('.bi-exclamation-triangle-fill');
+            if (unconfiguredPolos.length > 0) {
+                console.warn(`⚠️ ${unconfiguredPolos.length} polo(s) com configuração incompleta`);
+            }
         });
     </script>
 </body>

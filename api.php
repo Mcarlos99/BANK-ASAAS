@@ -557,7 +557,580 @@ try {
             }
             break;
             
-        // ===== FUNCIONALIDADES EXISTENTES (MANTIDAS) =====
+        // ===== FUNCIONALIDADES DE USUÁRIOS (MASTER ONLY) =====
+
+case 'list-users':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $page = (int)($_GET['page'] ?? 1);
+        $limit = (int)($_GET['limit'] ?? 50);
+        $search = $_GET['search'] ?? null;
+        $poloFilter = $_GET['polo_id'] ?? null;
+        $tipoFilter = $_GET['tipo'] ?? null;
+        
+        $db = DatabaseManager::getInstance();
+        $whereConditions = [];
+        $params = [];
+        
+        // Filtro por polo
+        if ($poloFilter) {
+            $whereConditions[] = "u.polo_id = ?";
+            $params[] = $poloFilter;
+        }
+        
+        // Filtro por tipo
+        if ($tipoFilter) {
+            $whereConditions[] = "u.tipo = ?";
+            $params[] = $tipoFilter;
+        }
+        
+        // Filtro de busca
+        if ($search) {
+            $whereConditions[] = "(u.nome LIKE ? OR u.email LIKE ?)";
+            $params[] = "%{$search}%";
+            $params[] = "%{$search}%";
+        }
+        
+        $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
+        
+        // Buscar usuários
+        $offset = ($page - 1) * $limit;
+        $stmt = $db->getConnection()->prepare("
+            SELECT u.*, 
+                   p.nome as polo_nome, 
+                   p.codigo as polo_codigo,
+                   (SELECT COUNT(*) FROM sessoes WHERE usuario_id = u.id AND expira_em > NOW()) as sessoes_ativas
+            FROM usuarios u
+            LEFT JOIN polos p ON u.polo_id = p.id
+            {$whereClause}
+            ORDER BY u.created_at DESC
+            LIMIT ? OFFSET ?
+        ");
+        
+        $stmt->execute(array_merge($params, [$limit, $offset]));
+        $usuarios = $stmt->fetchAll();
+        
+        // Contar total
+        $stmtCount = $db->getConnection()->prepare("
+            SELECT COUNT(*) as total
+            FROM usuarios u
+            LEFT JOIN polos p ON u.polo_id = p.id
+            {$whereClause}
+        ");
+        $stmtCount->execute($params);
+        $total = $stmtCount->fetch()['total'];
+        
+        // Mascarar senhas e adicionar informações extras
+        foreach ($usuarios as &$usuario) {
+            unset($usuario['senha']); // Remover senha do resultado
+            
+            // Status da última atividade
+            $usuario['status_atividade'] = $usuario['sessoes_ativas'] > 0 ? 'online' : 'offline';
+            
+            // Tempo desde último login
+            if ($usuario['ultimo_login']) {
+                $ultimoLogin = new DateTime($usuario['ultimo_login']);
+                $agora = new DateTime();
+                $diff = $agora->diff($ultimoLogin);
+                
+                if ($diff->days > 0) {
+                    $usuario['ultimo_login_formatado'] = $diff->days . ' dias atrás';
+                } elseif ($diff->h > 0) {
+                    $usuario['ultimo_login_formatado'] = $diff->h . ' horas atrás';
+                } else {
+                    $usuario['ultimo_login_formatado'] = 'Há pouco';
+                }
+            } else {
+                $usuario['ultimo_login_formatado'] = 'Nunca';
+            }
+            
+            // Tipo de usuário formatado
+            $tiposFormatados = [
+                'master' => 'Master Admin',
+                'admin_polo' => 'Admin do Polo',
+                'operador' => 'Operador'
+            ];
+            $usuario['tipo_formatado'] = $tiposFormatados[$usuario['tipo']] ?? $usuario['tipo'];
+        }
+        
+        jsonResponse(true, [
+            'usuarios' => $usuarios,
+            'pagination' => [
+                'current_page' => $page,
+                'total_pages' => ceil($total / $limit),
+                'total_records' => $total,
+                'per_page' => $limit
+            ],
+            'filters' => [
+                'search' => $search,
+                'polo_id' => $poloFilter,
+                'tipo' => $tipoFilter
+            ]
+        ], "Lista de usuários obtida com sucesso");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao listar usuários: " . $e->getMessage());
+    }
+    break;
+
+case 'create-user':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $db = DatabaseManager::getInstance();
+        
+        // Validar dados obrigatórios
+        $requiredFields = ['nome', 'email', 'tipo', 'senha'];
+        foreach ($requiredFields as $field) {
+            if (empty($_POST[$field])) {
+                throw new Exception("Campo '{$field}' é obrigatório");
+            }
+        }
+        
+        // Validar email único
+        $stmt = $db->getConnection()->prepare("SELECT COUNT(*) as count FROM usuarios WHERE email = ?");
+        $stmt->execute([$_POST['email']]);
+        if ($stmt->fetch()['count'] > 0) {
+            throw new Exception("Este email já está em uso por outro usuário");
+        }
+        
+        // Validar tipo de usuário
+        $tiposValidos = ['master', 'admin_polo', 'operador'];
+        if (!in_array($_POST['tipo'], $tiposValidos)) {
+            throw new Exception("Tipo de usuário inválido");
+        }
+        
+        // Para admin_polo e operador, polo_id é obrigatório
+        $poloId = null;
+        if (in_array($_POST['tipo'], ['admin_polo', 'operador'])) {
+            if (empty($_POST['polo_id'])) {
+                throw new Exception("Polo é obrigatório para este tipo de usuário");
+            }
+            $poloId = (int)$_POST['polo_id'];
+            
+            // Verificar se polo existe e está ativo
+            $stmt = $db->getConnection()->prepare("SELECT COUNT(*) as count FROM polos WHERE id = ? AND is_active = 1");
+            $stmt->execute([$poloId]);
+            if ($stmt->fetch()['count'] == 0) {
+                throw new Exception("Polo selecionado não existe ou está inativo");
+            }
+        }
+        
+        // Validar senha
+        if (strlen($_POST['senha']) < 6) {
+            throw new Exception("Senha deve ter pelo menos 6 caracteres");
+        }
+        
+        // Criar usuário
+        $senhaHash = password_hash($_POST['senha'], PASSWORD_DEFAULT);
+        
+        $stmt = $db->getConnection()->prepare("
+            INSERT INTO usuarios (polo_id, nome, email, senha, tipo, criado_por, is_active) 
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+        ");
+        
+        $stmt->execute([
+            $poloId,
+            trim($_POST['nome']),
+            trim($_POST['email']),
+            $senhaHash,
+            $_POST['tipo'],
+            $_SESSION['usuario_id']
+        ]);
+        
+        $usuarioId = $db->getConnection()->lastInsertId();
+        
+        // Log de auditoria
+        if ($auth->isLogado()) {
+            $stmt = $db->getConnection()->prepare("
+                INSERT INTO auditoria (usuario_id, polo_id, acao, tabela, registro_id, dados_novos, ip_address, user_agent) 
+                VALUES (?, ?, 'criar_usuario', 'usuarios', ?, ?, ?, ?)
+            ");
+            
+            $stmt->execute([
+                $_SESSION['usuario_id'],
+                $poloId,
+                $usuarioId,
+                json_encode([
+                    'nome' => $_POST['nome'],
+                    'email' => $_POST['email'],
+                    'tipo' => $_POST['tipo'],
+                    'polo_id' => $poloId
+                ]),
+                $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+                $_SERVER['HTTP_USER_AGENT'] ?? ''
+            ]);
+        }
+        
+        // Buscar dados do usuário criado para retorno
+        $stmt = $db->getConnection()->prepare("
+            SELECT u.*, p.nome as polo_nome 
+            FROM usuarios u 
+            LEFT JOIN polos p ON u.polo_id = p.id 
+            WHERE u.id = ?
+        ");
+        $stmt->execute([$usuarioId]);
+        $novoUsuario = $stmt->fetch();
+        
+        // Remover senha do retorno
+        unset($novoUsuario['senha']);
+        
+        jsonResponse(true, [
+            'usuario' => $novoUsuario,
+            'message' => 'Usuário criado com sucesso!'
+        ], "Usuário '{$_POST['nome']}' criado com sucesso");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao criar usuário: " . $e->getMessage());
+    }
+    break;
+
+case 'get-user':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $userId = (int)($_GET['id'] ?? 0);
+        if (!$userId) {
+            throw new Exception("ID do usuário é obrigatório");
+        }
+        
+        $db = DatabaseManager::getInstance();
+        $stmt = $db->getConnection()->prepare("
+            SELECT u.*, 
+                   p.nome as polo_nome, 
+                   p.codigo as polo_codigo,
+                   (SELECT COUNT(*) FROM auditoria WHERE usuario_id = u.id) as total_acoes,
+                   (SELECT MAX(data_acao) FROM auditoria WHERE usuario_id = u.id) as ultima_acao
+            FROM usuarios u
+            LEFT JOIN polos p ON u.polo_id = p.id
+            WHERE u.id = ?
+        ");
+        
+        $stmt->execute([$userId]);
+        $usuario = $stmt->fetch();
+        
+        if (!$usuario) {
+            throw new Exception("Usuário não encontrado");
+        }
+        
+        // Remover senha
+        unset($usuario['senha']);
+        
+        // Buscar últimas ações do usuário
+        $stmt = $db->getConnection()->prepare("
+            SELECT acao, tabela, data_acao, ip_address
+            FROM auditoria 
+            WHERE usuario_id = ? 
+            ORDER BY data_acao DESC 
+            LIMIT 10
+        ");
+        $stmt->execute([$userId]);
+        $ultimasAcoes = $stmt->fetchAll();
+        
+        $usuario['ultimas_acoes'] = $ultimasAcoes;
+        
+        jsonResponse(true, $usuario, "Dados do usuário obtidos");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao buscar usuário: " . $e->getMessage());
+    }
+    break;
+
+case 'toggle-user-status':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $userId = (int)($_POST['user_id'] ?? 0);
+        if (!$userId) {
+            throw new Exception("ID do usuário é obrigatório");
+        }
+        
+        // Não permitir desativar a si mesmo
+        if ($userId == $_SESSION['usuario_id']) {
+            throw new Exception("Você não pode desativar sua própria conta");
+        }
+        
+        $db = DatabaseManager::getInstance();
+        
+        // Buscar dados atuais
+        $stmt = $db->getConnection()->prepare("SELECT * FROM usuarios WHERE id = ?");
+        $stmt->execute([$userId]);
+        $usuario = $stmt->fetch();
+        
+        if (!$usuario) {
+            throw new Exception("Usuário não encontrado");
+        }
+        
+        // Não permitir desativar outro master (apenas master pode fazer isso)
+        if ($usuario['tipo'] === 'master' && !$auth->isMaster()) {
+            throw new Exception("Apenas Master Admin pode gerenciar outros Master Admins");
+        }
+        
+        // Alternar status
+        $novoStatus = $usuario['is_active'] ? 0 : 1;
+        
+        $stmt = $db->getConnection()->prepare("
+            UPDATE usuarios 
+            SET is_active = ?, data_atualizacao = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ");
+        $stmt->execute([$novoStatus, $userId]);
+        
+        // Se desativou, remover sessões ativas
+        if (!$novoStatus) {
+            $stmt = $db->getConnection()->prepare("DELETE FROM sessoes WHERE usuario_id = ?");
+            $stmt->execute([$userId]);
+        }
+        
+        // Log de auditoria
+        $stmt = $db->getConnection()->prepare("
+            INSERT INTO auditoria (usuario_id, polo_id, acao, tabela, registro_id, dados_novos, ip_address, user_agent) 
+            VALUES (?, ?, ?, 'usuarios', ?, ?, ?, ?)
+        ");
+        
+        $stmt->execute([
+            $_SESSION['usuario_id'],
+            $_SESSION['polo_id'] ?? null,
+            $novoStatus ? 'ativar_usuario' : 'desativar_usuario',
+            $userId,
+            json_encode([
+                'usuario_afetado' => $usuario['nome'],
+                'novo_status' => $novoStatus ? 'ativo' : 'inativo'
+            ]),
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            $_SERVER['HTTP_USER_AGENT'] ?? ''
+        ]);
+        
+        jsonResponse(true, [
+            'user_id' => $userId,
+            'new_status' => $novoStatus,
+            'status_text' => $novoStatus ? 'Ativo' : 'Inativo'
+        ], "Status do usuário " . ($novoStatus ? 'ativado' : 'desativado') . " com sucesso");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao alterar status: " . $e->getMessage());
+    }
+    break;
+
+case 'reset-user-password':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $userId = (int)($_POST['user_id'] ?? 0);
+        $novaSenha = $_POST['nova_senha'] ?? '';
+        
+        if (!$userId) {
+            throw new Exception("ID do usuário é obrigatório");
+        }
+        
+        if (strlen($novaSenha) < 6) {
+            throw new Exception("Nova senha deve ter pelo menos 6 caracteres");
+        }
+        
+        $db = DatabaseManager::getInstance();
+        
+        // Buscar dados do usuário
+        $stmt = $db->getConnection()->prepare("SELECT nome, email, tipo FROM usuarios WHERE id = ?");
+        $stmt->execute([$userId]);
+        $usuario = $stmt->fetch();
+        
+        if (!$usuario) {
+            throw new Exception("Usuário não encontrado");
+        }
+        
+        // Não permitir alterar senha de outro master (apenas master pode)
+        if ($usuario['tipo'] === 'master' && !$auth->isMaster()) {
+            throw new Exception("Apenas Master Admin pode alterar senha de outros Master Admins");
+        }
+        
+        // Atualizar senha
+        $senhaHash = password_hash($novaSenha, PASSWORD_DEFAULT);
+        
+        $stmt = $db->getConnection()->prepare("
+            UPDATE usuarios 
+            SET senha = ?, 
+                tentativas_login = 0, 
+                bloqueado_ate = NULL,
+                data_atualizacao = CURRENT_TIMESTAMP 
+            WHERE id = ?
+        ");
+        $stmt->execute([$senhaHash, $userId]);
+        
+        // Remover todas as sessões do usuário (forçar novo login)
+        $stmt = $db->getConnection()->prepare("DELETE FROM sessoes WHERE usuario_id = ?");
+        $stmt->execute([$userId]);
+        
+        // Log de auditoria
+        $stmt = $db->getConnection()->prepare("
+            INSERT INTO auditoria (usuario_id, polo_id, acao, tabela, registro_id, dados_novos, ip_address, user_agent) 
+            VALUES (?, ?, 'resetar_senha_usuario', 'usuarios', ?, ?, ?, ?)
+        ");
+        
+        $stmt->execute([
+            $_SESSION['usuario_id'],
+            $_SESSION['polo_id'] ?? null,
+            $userId,
+            json_encode([
+                'usuario_afetado' => $usuario['nome'],
+                'email' => $usuario['email']
+            ]),
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            $_SERVER['HTTP_USER_AGENT'] ?? ''
+        ]);
+        
+        jsonResponse(true, [
+            'user_id' => $userId,
+            'message' => 'Senha alterada com sucesso!'
+        ], "Senha do usuário '{$usuario['nome']}' foi alterada com sucesso");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao alterar senha: " . $e->getMessage());
+    }
+    break;
+
+case 'delete-user':
+    $auth->requirePermission('gerenciar_usuarios');
+    
+    try {
+        $userId = (int)($_POST['user_id'] ?? 0);
+        if (!$userId) {
+            throw new Exception("ID do usuário é obrigatório");
+        }
+        
+        // Não permitir excluir a si mesmo
+        if ($userId == $_SESSION['usuario_id']) {
+            throw new Exception("Você não pode excluir sua própria conta");
+        }
+        
+        $db = DatabaseManager::getInstance();
+        
+        // Buscar dados do usuário
+        $stmt = $db->getConnection()->prepare("SELECT * FROM usuarios WHERE id = ?");
+        $stmt->execute([$userId]);
+        $usuario = $stmt->fetch();
+        
+        if (!$usuario) {
+            throw new Exception("Usuário não encontrado");
+        }
+        
+        // Não permitir excluir master admin (apenas outro master pode)
+        if ($usuario['tipo'] === 'master' && !$auth->isMaster()) {
+            throw new Exception("Apenas Master Admin pode excluir outros Master Admins");
+        }
+        
+        // Verificar se é o último admin master
+        if ($usuario['tipo'] === 'master') {
+            $stmt = $db->getConnection()->prepare("SELECT COUNT(*) as count FROM usuarios WHERE tipo = 'master' AND is_active = 1");
+            $stmt->execute();
+            if ($stmt->fetch()['count'] <= 1) {
+                throw new Exception("Não é possível excluir o último Master Admin do sistema");
+            }
+        }
+        
+        // Log de auditoria antes de excluir
+        $stmt = $db->getConnection()->prepare("
+            INSERT INTO auditoria (usuario_id, polo_id, acao, tabela, registro_id, dados_anteriores, ip_address, user_agent) 
+            VALUES (?, ?, 'excluir_usuario', 'usuarios', ?, ?, ?, ?)
+        ");
+        
+        $stmt->execute([
+            $_SESSION['usuario_id'],
+            $_SESSION['polo_id'] ?? null,
+            $userId,
+            json_encode([
+                'nome' => $usuario['nome'],
+                'email' => $usuario['email'],
+                'tipo' => $usuario['tipo'],
+                'polo_id' => $usuario['polo_id']
+            ]),
+            $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+            $_SERVER['HTTP_USER_AGENT'] ?? ''
+        ]);
+        
+        // Remover sessões
+        $stmt = $db->getConnection()->prepare("DELETE FROM sessoes WHERE usuario_id = ?");
+        $stmt->execute([$userId]);
+        
+        // Excluir usuário
+        $stmt = $db->getConnection()->prepare("DELETE FROM usuarios WHERE id = ?");
+        $stmt->execute([$userId]);
+        
+        jsonResponse(true, [
+            'user_id' => $userId,
+            'message' => 'Usuário excluído com sucesso!'
+        ], "Usuário '{$usuario['nome']}' foi excluído com sucesso");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao excluir usuário: " . $e->getMessage());
+    }
+    break;
+
+// ===== FUNCIONALIDADE DE AUDITORIA =====
+
+case 'recent-activity':
+    $auth->requireLogin();
+    
+    try {
+        $limit = (int)($_GET['limit'] ?? 10);
+        $poloId = null;
+        
+        // Se não for master, filtrar por polo
+        if (!$auth->isMaster()) {
+            $poloId = $_SESSION['polo_id'];
+        } elseif (isset($_GET['polo_id'])) {
+            $poloId = (int)$_GET['polo_id'];
+        }
+        
+        $db = DatabaseManager::getInstance();
+        
+        $whereClause = '';
+        $params = [$limit];
+        
+        if ($poloId) {
+            $whereClause = 'WHERE a.polo_id = ?';
+            array_unshift($params, $poloId);
+        }
+        
+        $stmt = $db->getConnection()->prepare("
+            SELECT a.*, 
+                   u.nome as usuario_nome,
+                   p.nome as polo_nome
+            FROM auditoria a
+            LEFT JOIN usuarios u ON a.usuario_id = u.id
+            LEFT JOIN polos p ON a.polo_id = p.id
+            {$whereClause}
+            ORDER BY a.data_acao DESC
+            LIMIT ?
+        ");
+        
+        $stmt->execute($params);
+        $atividades = $stmt->fetchAll();
+        
+        // Formatar ações para exibição
+        $acoesFormatadas = [
+            'login_sucesso' => 'Login realizado',
+            'logout' => 'Logout',
+            'criar_polo' => 'Polo criado',
+            'criar_usuario' => 'Usuário criado',
+            'atualizar_config_asaas' => 'Configuração ASAAS atualizada',
+            'testar_config_asaas' => 'Teste de configuração',
+            'create_wallet' => 'Wallet ID criado',
+            'create_payment' => 'Pagamento criado'
+        ];
+        
+        foreach ($atividades as &$atividade) {
+            $atividade['acao_display'] = $acoesFormatadas[$atividade['acao']] ?? $atividade['acao'];
+        }
+        
+        jsonResponse(true, $atividades, "Atividade recente obtida");
+        
+    } catch (Exception $e) {
+        jsonResponse(false, null, "Erro ao obter atividade: " . $e->getMessage());
+    }
+    break;
+        
+            // ===== FUNCIONALIDADES EXISTENTES (MANTIDAS) =====
         
         case 'health-check':
             $issues = [];
@@ -686,7 +1259,7 @@ try {
                 ], "Limpeza concluída: {$deletedRows} registros e {$deletedFiles} arquivos removidos");
                 
             } catch (Exception $e) {
-                jsonResponse(false, null, "Erro na limpeza: " . $e->getMessage());
+                jsonResponse(false, null, "E'rro na limpeza: " . $e->getMessage());
             }
             break;
             
