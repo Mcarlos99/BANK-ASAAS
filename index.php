@@ -6,9 +6,7 @@
  */
 
 // Incluir arquivos necessários
-require_once 'config_api.php';
-require_once 'config.php';
-require_once 'asaas_split_system.php';
+require_once 'bootstrap.php';
 
 // Iniciar sessão para mensagens
 session_start();

@@ -31,9 +31,7 @@ debugLog("User Agent: " . ($_SERVER['HTTP_USER_AGENT'] ?? 'N/A'));
 
 try {
     // Incluir arquivos necessários
-    require_once __DIR__ . '/config_api.php';
-    require_once __DIR__ . '/config.php';
-    require_once __DIR__ . '/asaas_split_system.php';
+    require_once 'bootstrap.php';
     
     debugLog("Arquivos incluídos com sucesso");
     

@@ -2,7 +2,7 @@
 
 /**
  * Sistema de Split de Pagamentos - ASAAS
- * Versão para Produção
+ * Versão para Produção - CORRIGIDA
  * 
  * Autor: Sistema de Pagamentos
  * Data: 2025
@@ -605,56 +605,15 @@ class AsaasSplitPayment {
     }
 }
 
-// Classe para configuração do sistema
-class AsaasConfig {
-    
-    // Configurações de ambiente - CORRIGIDO para usar as constantes
-    const PRODUCTION_API_KEY = ASAAS_PRODUCTION_API_KEY;
-    const SANDBOX_API_KEY = ASAAS_SANDBOX_API_KEY;
-    const WEBHOOK_TOKEN = ASAAS_WEBHOOK_TOKEN;
-    
-    // Configurações do banco de dados (opcional)
-    const DB_HOST = DB_HOST;
-    const DB_NAME = DB_NAME;
-    const DB_USER = DB_USER;
-    const DB_PASS = DB_PASS;
-    
-    /**
-     * Retorna instância configurada do sistema
-     */
-    public static function getInstance($environment = null) {
-        // Usar ambiente definido nas configurações se não especificado
-        if ($environment === null) {
-            $environment = defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox';
-        }
-        
-        // Usar as constantes definidas no config.php
-        if ($environment === 'production') {
-            $apiKey = defined('ASAAS_PRODUCTION_API_KEY') ? ASAAS_PRODUCTION_API_KEY : null;
-        } else {
-            $apiKey = defined('ASAAS_SANDBOX_API_KEY') ? ASAAS_SANDBOX_API_KEY : null;
-        }
-        
-        // Verificar se a API Key foi configurada
-        if (empty($apiKey) || 
-            $apiKey === 'SUA_API_KEY_PRODUCAO_AQUI' || 
-            $apiKey === 'SUA_API_KEY_SANDBOX_AQUI' ||
-            $apiKey === '$aact_YTU5YjRlZmI2N2J4NzMzNmNlNzMwNDdlNzE1' ||
-            $apiKey === '$aact_MTU5YjRlZmI2N2J4NzMzNmNlNzMwNDdlNzE1') {
-            throw new Exception("API Key não configurada para ambiente '{$environment}'. Edite o arquivo config_api.php e configure sua chave do ASAAS.");
-        }
-        
-        return new AsaasSplitPayment($apiKey, $environment);
-    }
-}
+// CLASSE ASAASCONFIG REMOVIDA DAQUI - ESTÁ NO CONFIG.PHP
 
 // Exemplo de uso do sistema
 class ExampleUsage {
     
     public static function exemploCompleto() {
         try {
-            // Inicializar sistema
-            $asaas = AsaasConfig::getInstance('sandbox'); // Mudar para 'production'
+            // Usar a classe AsaasConfig do config.php
+            $asaas = AsaasConfig::getInstance('sandbox');
             
             // 1. Criar cliente
             $customer = $asaas->createCustomer([
@@ -785,7 +744,7 @@ class WebhookHandler {
             $asaas = AsaasConfig::getInstance('production');
             
             // Validar webhook
-            if (!$asaas->validateWebhook($payload, $signature, AsaasConfig::WEBHOOK_TOKEN)) {
+            if (!$asaas->validateWebhook($payload, $signature, ASAAS_WEBHOOK_TOKEN)) {
                 http_response_code(401);
                 exit('Unauthorized');
             }

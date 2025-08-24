@@ -139,11 +139,9 @@
 </head>
 <body class="bg-light">
     <?php
-    require_once 'config_api.php';
-    require_once 'config.php';
-    require_once 'auth.php';
-    require_once 'config_manager.php';
-    
+  
+require_once 'bootstrap.php'; 
+  
     // Verificar se é Master Admin
     $auth->requireLogin();
     if (!$auth->isMaster()) {
