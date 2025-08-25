@@ -1,8 +1,8 @@
 <?php
 /**
- * Interface Principal do Sistema IMEP Split ASAAS - VERSÃO CORRIGIDA FINAL
+ * Interface Principal do Sistema IMEP Split ASAAS - VERSÃO CORRIGIDA
  * Arquivo: index.php
- * Versão: 3.1 - Correção dos erros de SQL e variáveis
+ * Versão: 3.0 - Multi-Tenant com Autenticação Obrigatória
  */
 
 // ==================================================
@@ -17,9 +17,9 @@ if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-// Configurações de erro para desenvolvimento
+// Configurações de erro para desenvolvimento (remover em produção)
 error_reporting(E_ALL);
-ini_set('display_errors', 0);
+ini_set('display_errors', 0); // Não mostrar erros na tela
 ini_set('log_errors', 1);
 
 // Buffer de saída para controle de headers
@@ -82,13 +82,13 @@ try {
 }
 
 // ==================================================
-// CONFIGURAÇÃO DO CONTEXTO DO USUÁRIO - CORREÇÃO DAS VARIÁVEIS
+// CONFIGURAÇÃO DO CONTEXTO DO USUÁRIO
 // ==================================================
 
-// Determinar contexto baseado no tipo de usuário - CORRIGIDO
-$isMaster = ($usuario['tipo'] === 'master');
-$isAdminPolo = ($usuario['tipo'] === 'admin_polo');
-$isOperador = ($usuario['tipo'] === 'operador');
+// Determinar contexto baseado no tipo de usuário
+$isMaster = $usuario['tipo'] === 'master';
+$isAdminPolo = $usuario['tipo'] === 'admin_polo';
+$isOperador = $usuario['tipo'] === 'operador';
 
 // Configurar título e contexto da página
 $pageTitle = 'Dashboard';
@@ -99,10 +99,10 @@ if ($isMaster) {
     $pageSubtitle = 'Administração Central - Todos os Polos';
 } elseif ($isAdminPolo) {
     $pageTitle = 'Admin Dashboard';
-    $pageSubtitle = 'Administração do Polo: ' . ($usuario['polo_nome'] ?? 'N/A');
+    $pageSubtitle = 'Administração do Polo: ' . $usuario['polo_nome'];
 } else {
     $pageTitle = 'Operador Dashboard'; 
-    $pageSubtitle = 'Polo: ' . ($usuario['polo_nome'] ?? 'N/A');
+    $pageSubtitle = 'Polo: ' . $usuario['polo_nome'];
 }
 
 // Configurar permissões baseadas no tipo
@@ -156,13 +156,13 @@ function getContextualAsaasInstance() {
     }
 }
 
-// Função para filtrar dados por polo - CORRIGIDA
+// Função para filtrar dados por polo (se necessário)
 function applyPoloFilter($query, $params = []) {
     global $usuario, $isMaster;
     
     // Master vê todos os dados, outros usuários apenas do seu polo
     if (!$isMaster && $usuario['polo_id']) {
-        // Verificar se a query já tem WHERE clause
+        // Adicionar filtro por polo se a query ainda não tiver
         if (stripos($query, 'WHERE') !== false) {
             $query .= " AND polo_id = ?";
         } else {
@@ -186,9 +186,8 @@ $jsContext = [
     ],
     'permissions' => $permissions,
     'environment' => defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox',
-    'system_version' => '3.1 Multi-Tenant'
+    'system_version' => '3.0 Multi-Tenant'
 ];
-
 // ==================================================
 // PROCESSAMENTO DE AÇÕES E FORMULÁRIOS
 // ==================================================
@@ -227,13 +226,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 
                 // Criar Wallet ID
-                if (class_exists('WalletManager')) {
-                    $walletManager = new WalletManager();
-                    $wallet = $walletManager->createWallet($name, $walletId, $description, $usuario['polo_id']);
-                    setMessage('success', 'Wallet ID cadastrado com sucesso!', ['wallet_id' => $walletId]);
-                } else {
-                    throw new Exception('Sistema de Wallet Manager não disponível');
+                $walletManager = new WalletManager();
+                $wallet = $walletManager->createWallet($name, $walletId, $description, $usuario['polo_id']);
+                
+                // Log de auditoria
+                if (class_exists('ConfigManager')) {
+                    $auditData = [
+                        'wallet_name' => $name,
+                        'wallet_id' => $walletId,
+                        'description' => $description
+                    ];
+                    // Log seria implementado via ConfigManager se disponível
                 }
+                
+                setMessage('success', 'Wallet ID cadastrado com sucesso!', ['wallet_id' => $walletId]);
                 break;
                 
             case 'toggle_wallet_status':
@@ -252,16 +258,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $newStatus = $currentStatus ? 0 : 1;
                 
                 // Verificar se o wallet pertence ao polo do usuário (se não for master)
-                $checkQuery = "SELECT id FROM wallet_ids WHERE id = ?";
-                $checkParams = [$walletDbId];
-                
-                if (!$isMaster && $usuario['polo_id']) {
-                    $checkQuery .= " AND polo_id = ?";
-                    $checkParams[] = $usuario['polo_id'];
-                }
-                
-                $stmt = $db->getConnection()->prepare($checkQuery);
-                $stmt->execute($checkParams);
+                $filterResult = applyPoloFilter("SELECT id FROM wallet_ids WHERE id = ?", [$walletDbId]);
+                $stmt = $db->getConnection()->prepare($filterResult['query']);
+                $stmt->execute($filterResult['params']);
                 
                 if ($stmt->rowCount() === 0) {
                     throw new Exception('Wallet ID não encontrado ou você não tem permissão para alterá-lo');
@@ -301,17 +300,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception('Não é possível excluir. Este Wallet ID possui ' . $result['count'] . ' split(s) associado(s).');
                 }
                 
-                // Verificar permissão por polo e obter informações
-                $checkQuery = "SELECT wallet_id, name FROM wallet_ids WHERE id = ?";
-                $checkParams = [$walletDbId];
-                
-                if (!$isMaster && $usuario['polo_id']) {
-                    $checkQuery .= " AND polo_id = ?";
-                    $checkParams[] = $usuario['polo_id'];
-                }
-                
-                $stmt = $db->getConnection()->prepare($checkQuery);
-                $stmt->execute($checkParams);
+                // Verificar permissão por polo
+                $filterResult = applyPoloFilter("SELECT wallet_id, name FROM wallet_ids WHERE id = ?", [$walletDbId]);
+                $stmt = $db->getConnection()->prepare($filterResult['query']);
+                $stmt->execute($filterResult['params']);
                 $walletInfo = $stmt->fetch();
                 
                 if (!$walletInfo) {
@@ -361,6 +353,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $db->saveCustomer($customerSaveData);
                 
                 setMessage('success', 'Cliente criado com sucesso! ID: ' . $customer['id'], ['customer_id' => $customer['id']]);
+                break;
+                
+            // ==================================================
+            // GERENCIAMENTO DE CONTAS SPLIT
+            // ==================================================
+            
+            case 'create_account':
+                if (!$permissions['can_manage_wallets']) {
+                    throw new Exception('Você não tem permissão para criar contas de split');
+                }
+                
+                $accountData = $_POST['account'] ?? [];
+                
+                // Validações obrigatórias
+                $requiredFields = ['name', 'email', 'cpfCnpj', 'mobilePhone', 'address', 'province', 'postalCode'];
+                foreach ($requiredFields as $field) {
+                    if (empty($accountData[$field])) {
+                        throw new Exception("Campo '{$field}' é obrigatório para criar conta split");
+                    }
+                }
+                
+                // Limpeza de dados
+                $accountData['cpfCnpj'] = preg_replace('/[^0-9]/', '', $accountData['cpfCnpj']);
+                $accountData['mobilePhone'] = preg_replace('/[^0-9]/', '', $accountData['mobilePhone']);
+                $accountData['postalCode'] = preg_replace('/[^0-9]/', '', $accountData['postalCode']);
+                $accountData['incomeValue'] = (int)($accountData['incomeValue'] ?? 2500);
+                
+                // Validações de formato
+                if (!filter_var($accountData['email'], FILTER_VALIDATE_EMAIL)) {
+                    throw new Exception('Email inválido');
+                }
+                
+                if (strlen($accountData['cpfCnpj']) !== 11 && strlen($accountData['cpfCnpj']) !== 14) {
+                    throw new Exception('CPF deve ter 11 dígitos ou CNPJ deve ter 14 dígitos');
+                }
+                
+                if (strlen($accountData['mobilePhone']) < 10) {
+                    throw new Exception('Telefone deve ter pelo menos 10 dígitos');
+                }
+                
+                if (strlen($accountData['postalCode']) !== 8) {
+                    throw new Exception('CEP deve ter 8 dígitos');
+                }
+                
+                // Criar conta via API
+                $asaas = getContextualAsaasInstance();
+                
+                try {
+                    $account = $asaas->createAccount($accountData);
+                } catch (Exception $e) {
+                    // Tratar erros específicos do ASAAS
+                    $errorMessage = $e->getMessage();
+                    
+                    if (strpos($errorMessage, 'já está em uso') !== false || 
+                        strpos($errorMessage, 'already exists') !== false) {
+                        throw new Exception('Este email já está cadastrado no ASAAS. Use um email diferente.');
+                    }
+                    
+                    if (strpos($errorMessage, 'invalid') !== false) {
+                        throw new Exception('Dados inválidos: ' . $errorMessage);
+                    }
+                    
+                    throw new Exception('Erro na API ASAAS: ' . $errorMessage);
+                }
+                
+                // Salvar no banco com informações do polo
+                $db = DatabaseManager::getInstance();
+                $accountSaveData = array_merge($account, ['polo_id' => $usuario['polo_id']]);
+                $db->saveSplitAccount($accountSaveData);
+                
+                setMessage('success', 'Conta de split criada com sucesso! Wallet ID: ' . $account['walletId'], ['wallet_id' => $account['walletId']]);
                 break;
                 
             // ==================================================
@@ -430,6 +493,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     if ($totalFixedValue >= $paymentValue) {
                         throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor total do pagamento');
+                    }
+                    
+                    // Validar combinação de percentual + fixo
+                    $estimatedSplitValue = ($paymentValue * $totalPercentage / 100) + $totalFixedValue;
+                    if ($estimatedSplitValue >= $paymentValue) {
+                        throw new Exception('A combinação de valores fixos e percentuais excede o valor do pagamento');
                     }
                 }
                 
@@ -523,14 +592,13 @@ if (isset($_SESSION['flash_message'])) {
     $errorDetails = $_SESSION['flash_message']['details'] ?? [];
     unset($_SESSION['flash_message']);
 }
-
 // ==================================================
-// CARREGAMENTO DE DADOS CONTEXTUAIS - CORRIGIDO
+// CARREGAMENTO DE DADOS CONTEXTUAIS
 // ==================================================
 
 // Função para exibir mensagens de feedback
 function showMessage() {
-    global $message, $messageType, $errorDetails, $isMaster, $isAdminPolo;
+    global $message, $messageType, $errorDetails;
     
     if (!$message) return;
     
@@ -576,17 +644,10 @@ $payments = [];
 $walletIds = [];
 $topWallets = [];
 $recentActivity = [];
-$systemHealth = [
-    'database' => false,
-    'asaas_connection' => false,
-    'permissions' => true,
-    'configuration' => true,
-    'last_check' => date('Y-m-d H:i:s')
-];
+$systemHealth = [];
 
 try {
     $db = DatabaseManager::getInstance();
-    $systemHealth['database'] = true;
     
     // ==================================================
     // ESTATÍSTICAS CONTEXTUAIS
@@ -600,7 +661,7 @@ try {
     } else {
         // Usuários de polo veem apenas dados do seu polo
         $stats = SystemStats::getGeneralStats($usuario['polo_id']);
-        $contextLabel = $usuario['polo_nome'] ?? 'Polo N/A';
+        $contextLabel = $usuario['polo_nome'];
     }
     
     // Adicionar informações contextuais às estatísticas
@@ -611,20 +672,14 @@ try {
     }
     
     // ==================================================
-    // CLIENTES RECENTES - CORRIGIDO
+    // CLIENTES RECENTES
     // ==================================================
     
     $customerQuery = "SELECT * FROM customers ORDER BY created_at DESC LIMIT 10";
-    $customerParams = [];
+    $customerResult = applyPoloFilter($customerQuery);
     
-    // Aplicar filtro de polo se necessário
-    if (!$isMaster && $usuario['polo_id']) {
-        $customerQuery = "SELECT * FROM customers WHERE polo_id = ? ORDER BY created_at DESC LIMIT 10";
-        $customerParams = [$usuario['polo_id']];
-    }
-    
-    $stmt = $db->getConnection()->prepare($customerQuery);
-    $stmt->execute($customerParams);
+    $stmt = $db->getConnection()->prepare($customerResult['query']);
+    $stmt->execute($customerResult['params']);
     $customers = $stmt->fetchAll();
     
     // Adicionar informações extras aos clientes
@@ -639,20 +694,14 @@ try {
     }
     
     // ==================================================
-    // CONTAS DE SPLIT - CORRIGIDO
+    // CONTAS DE SPLIT
     // ==================================================
     
     $accountQuery = "SELECT * FROM split_accounts WHERE status = 'ACTIVE' ORDER BY created_at DESC LIMIT 10";
-    $accountParams = [];
+    $accountResult = applyPoloFilter($accountQuery);
     
-    // Aplicar filtro de polo se necessário
-    if (!$isMaster && $usuario['polo_id']) {
-        $accountQuery = "SELECT * FROM split_accounts WHERE polo_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 10";
-        $accountParams = [$usuario['polo_id']];
-    }
-    
-    $stmt = $db->getConnection()->prepare($accountQuery);
-    $stmt->execute($accountParams);
+    $stmt = $db->getConnection()->prepare($accountResult['query']);
+    $stmt->execute($accountResult['params']);
     $splitAccounts = $stmt->fetchAll();
     
     // Adicionar informações extras às contas
@@ -678,7 +727,7 @@ try {
     }
     
     // ==================================================
-    // PAGAMENTOS RECENTES - CORRIGIDO
+    // PAGAMENTOS RECENTES
     // ==================================================
     
     $paymentQuery = "
@@ -690,20 +739,12 @@ try {
                ), 0) FROM payment_splits WHERE payment_id = p.id) as total_split_value
         FROM payments p 
         LEFT JOIN customers c ON p.customer_id = c.id 
+        ORDER BY p.created_at DESC LIMIT 15
     ";
     
-    $paymentParams = [];
-    
-    // Aplicar filtro de polo se necessário
-    if (!$isMaster && $usuario['polo_id']) {
-        $paymentQuery .= " WHERE p.polo_id = ?";
-        $paymentParams[] = $usuario['polo_id'];
-    }
-    
-    $paymentQuery .= " ORDER BY p.created_at DESC LIMIT 15";
-    
-    $stmt = $db->getConnection()->prepare($paymentQuery);
-    $stmt->execute($paymentParams);
+    $paymentResult = applyPoloFilter($paymentQuery);
+    $stmt = $db->getConnection()->prepare($paymentResult['query']);
+    $stmt->execute($paymentResult['params']);
     $payments = $stmt->fetchAll();
     
     // Adicionar informações extras aos pagamentos
@@ -729,7 +770,7 @@ try {
     }
     
     // ==================================================
-    // WALLET IDs - CORRIGIDO
+    // WALLET IDs
     // ==================================================
     
     $walletQuery = "
@@ -744,20 +785,12 @@ try {
                 JOIN payments p ON ps.payment_id = p.id 
                 WHERE ps.wallet_id = wi.wallet_id AND p.status = 'RECEIVED') as total_earned
         FROM wallet_ids wi 
+        ORDER BY wi.created_at DESC LIMIT 50
     ";
     
-    $walletParams = [];
-    
-    // Aplicar filtro de polo se necessário
-    if (!$isMaster && $usuario['polo_id']) {
-        $walletQuery .= " WHERE wi.polo_id = ?";
-        $walletParams[] = $usuario['polo_id'];
-    }
-    
-    $walletQuery .= " ORDER BY wi.created_at DESC LIMIT 50";
-    
-    $stmt = $db->getConnection()->prepare($walletQuery);
-    $stmt->execute($walletParams);
+    $walletResult = applyPoloFilter($walletQuery);
+    $stmt = $db->getConnection()->prepare($walletResult['query']);
+    $stmt->execute($walletResult['params']);
     $walletIds = $stmt->fetchAll();
     
     // Processar informações dos Wallet IDs
@@ -771,7 +804,7 @@ try {
     }
     
     // ==================================================
-    // TOP WALLET IDs (MAIS UTILIZADOS) - CORRIGIDO
+    // TOP WALLET IDs (MAIS UTILIZADOS)
     // ==================================================
     
     $topWalletQuery = "
@@ -788,18 +821,11 @@ try {
         WHERE wi.is_active = 1
     ";
     
-    $topWalletParams = [];
-    
-    // Aplicar filtro de polo se necessário
-    if (!$isMaster && $usuario['polo_id']) {
-        $topWalletQuery .= " AND wi.polo_id = ?";
-        $topWalletParams[] = $usuario['polo_id'];
-    }
-    
-    $topWalletQuery .= " GROUP BY wi.id HAVING split_count > 0 ORDER BY total_received DESC LIMIT 5";
+    $topWalletResult = applyPoloFilter($topWalletQuery);
+    $topWalletQuery = $topWalletResult['query'] . " GROUP BY wi.id HAVING split_count > 0 ORDER BY total_received DESC LIMIT 5";
     
     $stmt = $db->getConnection()->prepare($topWalletQuery);
-    $stmt->execute($topWalletParams);
+    $stmt->execute($topWalletResult['params']);
     $topWallets = $stmt->fetchAll();
     
     foreach ($topWallets as &$topWallet) {
@@ -812,51 +838,29 @@ try {
     }
     
     // ==================================================
-    // ATIVIDADE RECENTE (ÚLTIMAS AÇÕES) - CORRIGIDO
+    // ATIVIDADE RECENTE (ÚLTIMAS AÇÕES)
     // ==================================================
     
     $activityQuery = "
         SELECT 'payment' as type, id, created_at, status, value, description as title, customer_id
         FROM payments 
         WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-    ";
-    $activityParams = [];
-    
-    if (!$isMaster && $usuario['polo_id']) {
-        $activityQuery .= " AND polo_id = ?";
-        $activityParams[] = $usuario['polo_id'];
-    }
-    
-    $activityQuery .= "
         UNION ALL
         SELECT 'customer' as type, id, created_at, 'active' as status, 0 as value, name as title, id as customer_id
         FROM customers 
         WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-    ";
-    
-    if (!$isMaster && $usuario['polo_id']) {
-        $activityQuery .= " AND polo_id = ?";
-        $activityParams[] = $usuario['polo_id'];
-    }
-    
-    $activityQuery .= "
         UNION ALL
         SELECT 'wallet' as type, id, created_at, 
                CASE WHEN is_active THEN 'active' ELSE 'inactive' END as status, 
                0 as value, name as title, null as customer_id
         FROM wallet_ids 
         WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        ORDER BY created_at DESC LIMIT 10
     ";
     
-    if (!$isMaster && $usuario['polo_id']) {
-        $activityQuery .= " AND polo_id = ?";
-        $activityParams[] = $usuario['polo_id'];
-    }
-    
-    $activityQuery .= " ORDER BY created_at DESC LIMIT 10";
-    
-    $stmt = $db->getConnection()->prepare($activityQuery);
-    $stmt->execute($activityParams);
+    $activityResult = applyPoloFilter($activityQuery);
+    $stmt = $db->getConnection()->prepare($activityResult['query']);
+    $stmt->execute($activityResult['params']);
     $recentActivity = $stmt->fetchAll();
     
     foreach ($recentActivity as &$activity) {
@@ -882,8 +886,16 @@ try {
     }
     
     // ==================================================
-    // VERIFICAÇÃO DE SAÚDE DO SISTEMA - CORRIGIDO
+    // VERIFICAÇÃO DE SAÚDE DO SISTEMA
     // ==================================================
+    
+    $systemHealth = [
+        'database' => true,
+        'asaas_connection' => false,
+        'permissions' => true,
+        'configuration' => true,
+        'last_check' => date('Y-m-d H:i:s')
+    ];
     
     // Testar conexão ASAAS (apenas para admins)
     if ($permissions['can_configure_asaas']) {
@@ -1037,7 +1049,6 @@ if (!$isMaster && $usuario['polo_id']) {
         $configurationIssues[] = "Configuração ASAAS do polo não encontrada";
     }
 }
-
 ?>
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -1427,43 +1438,10 @@ if (!$isMaster && $usuario['polo_id']) {
                             <i class="bi bi-credit-card-2-front me-2"></i>
                             IMEP Split
                         </h4>
-                        <small class="text-white-50">Sistema ASAAS v3.1</small>
+                        <small class="text-white-50">Sistema ASAAS v3.0</small>
                     </div>
                     
-                    <!-- Informações do Usuário -->
-                    <div class="user-info text-white">
-                        <div class="d-flex align-items-center mb-2">
-                            <div class="bg-white rounded-circle d-flex align-items-center justify-content-center me-3" 
-                                 style="width: 40px; height: 40px;">
-                                <i class="bi bi-person text-primary fs-5"></i>
-                            </div>
-                            <div>
-                                <div class="fw-bold"><?php echo htmlspecialchars($usuario['nome']); ?></div>
-                                <small class="opacity-75"><?php echo htmlspecialchars($usuario['email']); ?></small>
-                            </div>
-                        </div>
-                        
-                        <!-- Tipo de Usuário -->
-                        <div class="d-flex justify-content-between align-items-center">
-                            <span class="badge" style="background: rgba(255,255,255,0.2);">
-                                <?php 
-                                $tiposFormatados = [
-                                    'master' => 'Master Admin',
-                                    'admin_polo' => 'Admin do Polo',
-                                    'operador' => 'Operador'
-                                ];
-                                echo $tiposFormatados[$usuario['tipo']] ?? $usuario['tipo'];
-                                ?>
-                            </span>
-                            
-                            <?php if (!$isMaster): ?>
-                            <div class="polo-context">
-                                <i class="bi bi-building me-1"></i>
-                                <?php echo htmlspecialchars($usuario['polo_nome'] ?? 'N/A'); ?>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+
                     
                     <!-- Navegação Principal -->
                     <nav class="nav flex-column">
@@ -1525,7 +1503,7 @@ if (!$isMaster && $usuario['polo_id']) {
                         <div class="text-white-50 small">
                             <div class="d-flex justify-content-between align-items-center mb-1">
                                 <span>Sistema:</span>
-                                <span class="health-indicator <?php echo ($systemHealth['database'] && $systemHealth['configuration']) ? 'healthy' : 'warning'; ?>"></span>
+                                <span class="health-indicator <?php echo $systemHealth['database'] && $systemHealth['configuration'] ? 'healthy' : 'warning'; ?>"></span>
                             </div>
                             
                             <?php if ($permissions['can_configure_asaas']): ?>
@@ -1537,8 +1515,8 @@ if (!$isMaster && $usuario['polo_id']) {
                             
                             <div class="d-flex justify-content-between align-items-center">
                                 <span>Ambiente:</span>
-                                <span class="badge badge-sm <?php echo (defined('ASAAS_ENVIRONMENT') && ASAAS_ENVIRONMENT === 'production') ? 'bg-danger' : 'bg-warning'; ?>">
-                                    <?php echo strtoupper(defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'DEV'); ?>
+                                <span class="badge badge-sm <?php echo ASAAS_ENVIRONMENT === 'production' ? 'bg-danger' : 'bg-warning'; ?>">
+                                    <?php echo strtoupper(ASAAS_ENVIRONMENT ?? 'DEV'); ?>
                                 </span>
                             </div>
                         </div>
@@ -1568,8 +1546,8 @@ if (!$isMaster && $usuario['polo_id']) {
                             <?php endif; ?>
                             
                             <!-- Badge do Ambiente -->
-                            <span class="environment-badge badge bg-<?php echo (defined('ASAAS_ENVIRONMENT') && ASAAS_ENVIRONMENT === 'production') ? 'danger' : 'warning'; ?>">
-                                <?php echo strtoupper(defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'DEV'); ?>
+                            <span class="environment-badge badge bg-<?php echo ASAAS_ENVIRONMENT === 'production' ? 'danger' : 'warning'; ?>">
+                                <?php echo strtoupper(ASAAS_ENVIRONMENT ?? 'DEV'); ?>
                             </span>
                             
                             <!-- Botões de Ação Rápida -->
@@ -1626,7 +1604,6 @@ if (!$isMaster && $usuario['polo_id']) {
                         </div>
                     </div>
                     <?php endif; ?>
-
                     <!-- ===== DASHBOARD (SEÇÃO PRINCIPAL) ===== -->
                     <div id="dashboard-section" class="section active">
                         <!-- Estatísticas Gerais -->
@@ -1894,13 +1871,11 @@ if (!$isMaster && $usuario['polo_id']) {
                             </div>
                         </div>
                     </div>
-
-                    <!-- O restante das seções seria similar, seguindo o mesmo padrão -->
-                    <!-- Wallet IDs, Pagamentos, Relatórios, etc... -->
                     
-                                    <!-- ===== SEÇÃO WALLET IDs ===== -->
-                                    <?php if ($permissions['can_manage_wallets']): ?>
-                    <div id="wallets-section" class="section">
+                    <!-- ===== SEÇÃO WALLET IDs ===== -->
+                    <?php if ($permissions['can_manage_wallets']): ?>
+                    <!-- <div id="wallets-section" class="section"> -->
+                    <div id="wallets" class="section">
                         <div class="row">
                             <div class="col-md-4">
                                 <div class="card">
@@ -2021,171 +1996,6 @@ if (!$isMaster && $usuario['polo_id']) {
                                                 <small class="text-muted">
                                                     Você precisará criar contas no painel ASAAS primeiro
                                                 </small>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <?php endif; ?>
-
-                                        <!-- ===== SEÇÃO CONTAS SPLIT ===== -->
-                                        <?php if ($permissions['can_manage_wallets']): ?>
-                    <div id="accounts-section" class="section">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <div class="card">
-                                    <div class="card-header">
-                                        <h5><i class="bi bi-plus-circle me-2"></i>Nova Conta Split</h5>
-                                    </div>
-                                    <div class="card-body">
-                                        <form method="POST" id="account-form">
-                                            <input type="hidden" name="action" value="create_account">
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Nome/Razão Social *</label>
-                                                <input type="text" class="form-control" name="account[name]" required
-                                                       placeholder="Nome completo ou razão social">
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Email *</label>
-                                                <input type="email" class="form-control" name="account[email]" required
-                                                       placeholder="email@exemplo.com">
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">CPF/CNPJ *</label>
-                                                <input type="text" class="form-control" name="account[cpfCnpj]" required 
-                                                       placeholder="000.000.000-00 ou 00.000.000/0000-00">
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Telefone *</label>
-                                                <input type="text" class="form-control" name="account[mobilePhone]" required
-                                                       placeholder="(00) 00000-0000">
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Endereço *</label>
-                                                <input type="text" class="form-control" name="account[address]" required 
-                                                       placeholder="Rua, Avenida, etc.">
-                                            </div>
-                                            
-                                            <div class="row">
-                                                <div class="col-md-8">
-                                                    <div class="mb-3">
-                                                        <label class="form-label">Estado *</label>
-                                                        <select class="form-select" name="account[province]" required>
-                                                            <option value="">Selecione o estado</option>
-                                                            <option value="SP">São Paulo</option>
-                                                            <option value="RJ">Rio de Janeiro</option>
-                                                            <option value="MG">Minas Gerais</option>
-                                                            <option value="PR">Paraná</option>
-                                                            <option value="SC">Santa Catarina</option>
-                                                            <option value="RS">Rio Grande do Sul</option>
-                                                            <option value="BA">Bahia</option>
-                                                            <option value="GO">Goiás</option>
-                                                            <option value="DF">Distrito Federal</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <div class="col-md-4">
-                                                    <div class="mb-3">
-                                                        <label class="form-label">CEP *</label>
-                                                        <input type="text" class="form-control" name="account[postalCode]" required
-                                                               placeholder="00000-000">
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Tipo de Empresa *</label>
-                                                <select class="form-select" name="account[companyType]" required>
-                                                    <option value="">Selecione o tipo</option>
-                                                    <option value="MEI">MEI - Microempreendedor Individual</option>
-                                                    <option value="LIMITED">LTDA - Sociedade Limitada</option>
-                                                    <option value="INDIVIDUAL">Pessoa Física</option>
-                                                    <option value="ASSOCIATION">Associação</option>
-                                                </select>
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Renda/Faturamento Mensal *</label>
-                                                <select class="form-select" name="account[incomeValue]" required>
-                                                    <option value="">Selecione a faixa</option>
-                                                    <option value="1500">Até R$ 1.500</option>
-                                                    <option value="2500">R$ 1.500 a R$ 3.000</option>
-                                                    <option value="4000">R$ 3.000 a R$ 5.000</option>
-                                                    <option value="7500">R$ 5.000 a R$ 10.000</option>
-                                                    <option value="15000">R$ 10.000 a R$ 20.000</option>
-                                                    <option value="35000">R$ 20.000 a R$ 50.000</option>
-                                                    <option value="75000">Acima de R$ 50.000</option>
-                                                </select>
-                                            </div>
-                                            
-                                            <button type="submit" class="btn btn-gradient w-100">
-                                                <i class="bi bi-save me-2"></i>Criar Conta Split
-                                            </button>
-                                        </form>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            <div class="col-md-6">
-                                <div class="card">
-                                    <div class="card-header d-flex justify-content-between align-items-center">
-                                        <h5><i class="bi bi-list me-2"></i>Contas Cadastradas</h5>
-                                        <button type="button" class="btn btn-outline-primary btn-sm" onclick="syncAccounts()">
-                                            <i class="bi bi-arrow-clockwise"></i> Sincronizar
-                                        </button>
-                                    </div>
-                                    <div class="card-body">
-                                        <?php if (!empty($splitAccounts)): ?>
-                                            <div class="table-responsive">
-                                                <table class="table table-sm">
-                                                    <thead>
-                                                        <tr>
-                                                            <th>Nome</th>
-                                                            <th>Wallet ID</th>
-                                                            <th>Status</th>
-                                                            <th>Atividade</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody>
-                                                        <?php foreach ($splitAccounts as $account): ?>
-                                                        <tr>
-                                                            <td>
-                                                                <strong><?php echo htmlspecialchars($account['name']); ?></strong><br>
-                                                                <small class="text-muted"><?php echo htmlspecialchars($account['email']); ?></small>
-                                                            </td>
-                                                            <td>
-                                                                <code><?php echo $account['masked_wallet']; ?></code>
-                                                            </td>
-                                                            <td>
-                                                                <span class="badge bg-<?php echo $account['status'] === 'ACTIVE' ? 'success' : 'warning'; ?>">
-                                                                    <?php echo $account['status']; ?>
-                                                                </span>
-                                                            </td>
-                                                            <td>
-                                                                <small class="text-muted">
-                                                                    <?php echo $account['splits_received']; ?> splits<br>
-                                                                    R$ <?php echo number_format($account['total_received'], 2, ',', '.'); ?>
-                                                                </small>
-                                                            </td>
-                                                        </tr>
-                                                        <?php endforeach; ?>
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        <?php else: ?>
-                                            <div class="empty-state">
-                                                <i class="bi bi-bank"></i>
-                                                <p>Nenhuma conta cadastrada</p>
-                                                <button type="button" class="btn btn-outline-primary btn-sm" onclick="syncAccounts()">
-                                                    <i class="bi bi-download"></i> Importar do ASAAS
-                                                </button>
                                             </div>
                                         <?php endif; ?>
                                     </div>
@@ -2515,175 +2325,476 @@ if (!$isMaster && $usuario['polo_id']) {
        </div>
    </div>
 
-
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Scripts JavaScript -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // ===== CONFIGURAÇÃO GLOBAL =====
-        const SystemConfig = <?php echo json_encode($jsContext); ?>;
-        let currentSection = 'dashboard';
-        let splitCounter = 1;
-        
-        console.log('🚀 Sistema IMEP Split ASAAS v3.1 carregado - CORRIGIDO');
-        console.log('👤 Usuário:', SystemConfig.user.nome, '(' + SystemConfig.user.tipo + ')');
-        console.log('🏢 Contexto:', SystemConfig.user.polo_nome || 'Master');
-        console.log('🔧 Ambiente:', SystemConfig.environment);
-        
-        // ===== NAVEGAÇÃO ENTRE SEÇÕES =====
-        function showSection(section) {
-            // Verificar permissões
-            if (!checkSectionPermission(section)) {
-                showToast('Você não tem permissão para acessar esta seção', 'warning');
-                return;
-            }
-            
-            // Esconder todas as seções
-            document.querySelectorAll('.section').forEach(el => {
-                el.classList.remove('active');
-            });
-            
-            // Mostrar seção selecionada
-            const targetSection = document.getElementById(section + '-section');
-            if (targetSection) {
-                targetSection.classList.add('active');
-                currentSection = section;
-                
-                // Atualizar navegação
-                document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
-                const navLink = document.querySelector(`[data-section="${section}"]`);
-                if (navLink) navLink.classList.add('active');
-                
-                console.log('📍 Seção alterada para:', section);
-            }
-        }
-        
-        function checkSectionPermission(section) {
-            const permissionMap = {
-                'wallets': SystemConfig.permissions.can_manage_wallets,
-                'accounts': SystemConfig.permissions.can_manage_wallets,
-                'reports': SystemConfig.permissions.can_view_reports
-            };
-            
-            return permissionMap[section] !== false;
-        }
-        
-        // Event listeners para navegação
-        document.addEventListener('DOMContentLoaded', function() {
-            document.querySelectorAll('[data-section]').forEach(link => {
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const section = e.target.closest('[data-section]').dataset.section;
-                    showSection(section);
-                });
-            });
-            
-            // Inicialização
-            initializeSystem();
-        });
-        
-        // ===== INICIALIZAÇÃO DO SISTEMA =====
-        function initializeSystem() {
-            // Tooltips
-            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-            tooltipTriggerList.map(function (tooltipTriggerEl) {
-                return new bootstrap.Tooltip(tooltipTriggerEl);
-            });
-            
-            console.log('✅ Sistema inicializado com sucesso - ERROS CORRIGIDOS');
-        }
-        
-        // ===== FUNÇÕES BÁSICAS =====
-        function testConnection() {
-            const btn = event.target.closest('button');
-            const originalText = btn.innerHTML;
-            btn.innerHTML = '<span class="loading me-2"></span>Testando...';
-            btn.disabled = true;
-            
-            const formData = new FormData();
-            formData.append('action', 'test_connection');
-            
-            fetch('', {
-                method: 'POST',
-                body: formData
-            })
-            .then(response => response.text())
-            .then(() => {
-                showToast('Conexão testada com sucesso!', 'success');
-                setTimeout(() => location.reload(), 2000);
-            })
-            .catch(error => {
-                showToast('Erro na conexão: ' + error.message, 'error');
-            })
-            .finally(() => {
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-            });
-        }
-        
-        function refreshDashboard() {
-            showToast('Atualizando dashboard...', 'info');
-            setTimeout(() => location.reload(), 1000);
-        }
-        
-        function refreshActivity() {
-            console.log('🔄 Refresh automático da atividade');
-        }
-        
-        function showToast(message, type = 'info') {
-            const toastClass = {
-                success: 'text-bg-success',
-                error: 'text-bg-danger', 
-                warning: 'text-bg-warning',
-                info: 'text-bg-info'
-            }[type] || 'text-bg-info';
-            
-            const iconClass = {
-                success: 'bi-check-circle',
-                error: 'bi-exclamation-triangle',
-                warning: 'bi-exclamation-triangle',
-                info: 'bi-info-circle'
-            }[type] || 'bi-info-circle';
-            
-            const toastHtml = `
-                <div class="position-fixed top-0 end-0 p-3" style="z-index: 9999;">
-                    <div class="toast show ${toastClass}" role="alert">
-                        <div class="d-flex">
-                            <div class="toast-body">
-                                <i class="bi ${iconClass} me-2"></i>
-                                ${message}
-                            </div>
-                            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            document.body.insertAdjacentHTML('beforeend', toastHtml);
-            
-            // Auto-remove após 5 segundos
-            setTimeout(() => {
-                const toasts = document.querySelectorAll('.toast');
-                if (toasts.length > 0) {
-                    toasts[toasts.length - 1].closest('div').remove();
-                }
-            }, 5000);
-        }
-        
-        function logout() {
-            if (confirm('Deseja realmente sair do sistema?')) {
-                window.location.href = 'login.php?action=logout';
-            }
-        }
-        
-        // Log de inicialização completa
-        window.addEventListener('load', function() {
-            console.log('🎉 Sistema IMEP Split ASAAS v3.1 totalmente carregado - ERROS CORRIGIDOS');
-        });
-    </script>
+   <!-- Scripts JavaScript -->
+   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+   <script>
+       // ===== CONFIGURAÇÃO GLOBAL =====
+       const SystemConfig = <?php echo json_encode($jsContext); ?>;
+       let currentSection = 'dashboard';
+       let splitCounter = 1;
+       
+       console.log('🚀 Sistema IMEP Split ASAAS v3.0 carregado');
+       console.log('👤 Usuário:', SystemConfig.user.nome, '(' + SystemConfig.user.tipo + ')');
+       console.log('🏢 Contexto:', SystemConfig.user.polo_nome || 'Master');
+       console.log('🔧 Ambiente:', SystemConfig.environment);
+       
+       // ===== NAVEGAÇÃO ENTRE SEÇÕES =====
+       function showSection(section) {
+           // Verificar permissões
+           if (!checkSectionPermission(section)) {
+               showToast('Você não tem permissão para acessar esta seção', 'warning');
+               return;
+           }
+           
+           // Esconder todas as seções
+           document.querySelectorAll('.section').forEach(el => {
+               el.classList.remove('active');
+           });
+           
+           // Mostrar seção selecionada
+           const targetSection = document.getElementById(section + '-section');
+           if (targetSection) {
+               targetSection.classList.add('active');
+               currentSection = section;
+               
+               // Atualizar navegação
+               document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
+               const navLink = document.querySelector(`[data-section="${section}"]`);
+               if (navLink) navLink.classList.add('active');
+               
+               // Ações específicas por seção
+               switch(section) {
+                   case 'payments':
+                       loadRecentPayments();
+                       break;
+                   case 'reports':
+                       updateQuickStats();
+                       break;
+               }
+               
+               // Log para analytics
+               console.log('📍 Seção alterada para:', section);
+           }
+       }
+       
+       function checkSectionPermission(section) {
+           const permissionMap = {
+               'wallets': SystemConfig.permissions.can_manage_wallets,
+               'accounts': SystemConfig.permissions.can_manage_wallets,
+               'reports': SystemConfig.permissions.can_view_reports
+           };
+           
+           return permissionMap[section] !== false;
+       }
+       
+       // Event listeners para navegação
+       document.addEventListener('DOMContentLoaded', function() {
+           document.querySelectorAll('[data-section]').forEach(link => {
+               link.addEventListener('click', (e) => {
+                   e.preventDefault();
+                   const section = e.target.closest('[data-section]').dataset.section;
+                   showSection(section);
+               });
+           });
+           
+           // Inicialização
+           initializeSystem();
+       });
+       
+       // ===== INICIALIZAÇÃO DO SISTEMA =====
+       function initializeSystem() {
+           // Tooltips
+           const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+           tooltipTriggerList.map(function (tooltipTriggerEl) {
+               return new bootstrap.Tooltip(tooltipTriggerEl);
+           });
+           
+           // Máscaras de input
+           addInputMasks();
+           
+           // Validações de formulário
+           setupFormValidations();
+           
+           // Auto-refresh de atividade a cada 5 minutos
+           setInterval(refreshActivity, 300000);
+           
+           // Verificação de saúde do sistema a cada 10 minutos
+           setInterval(checkSystemHealth, 600000);
+           
+           console.log('✅ Sistema inicializado com sucesso');
+       }
+       
+       // ===== GERENCIAMENTO DE WALLET IDs =====
+       function copyToClipboard(text) {
+           if (navigator.clipboard) {
+               navigator.clipboard.writeText(text).then(() => {
+                   showToast('Wallet ID copiado para a área de transferência!', 'success');
+               }).catch(() => {
+                   fallbackCopyToClipboard(text);
+               });
+           } else {
+               fallbackCopyToClipboard(text);
+           }
+       }
+       
+       function fallbackCopyToClipboard(text) {
+           const textArea = document.createElement('textarea');
+           textArea.value = text;
+           document.body.appendChild(textArea);
+           textArea.focus();
+           textArea.select();
+           
+           try {
+               document.execCommand('copy');
+               showToast('Wallet ID copiado!', 'success');
+           } catch (err) {
+               showToast('Erro ao copiar. Use Ctrl+C manualmente.', 'error');
+           }
+           
+           document.body.removeChild(textArea);
+       }
+       
+       function toggleWalletStatus(walletDbId, currentStatus) {
+           if (!confirm('Deseja ' + (currentStatus ? 'desativar' : 'ativar') + ' este Wallet ID?')) {
+               return;
+           }
+           
+           const formData = new FormData();
+           formData.append('action', 'toggle_wallet_status');
+           formData.append('wallet_db_id', walletDbId);
+           formData.append('current_status', currentStatus);
+           
+           fetch('', {
+               method: 'POST',
+               body: formData
+           })
+           .then(response => response.text())
+           .then(() => {
+               showToast('Status alterado com sucesso!', 'success');
+               setTimeout(() => location.reload(), 1500);
+           })
+           .catch(error => {
+               showToast('Erro ao alterar status: ' + error.message, 'error');
+           });
+       }
+       
+       function deleteWallet(walletDbId, walletName) {
+           if (!confirm(`Tem certeza que deseja excluir o Wallet ID "${walletName}"?\n\nEsta ação não pode ser desfeita.`)) {
+               return;
+           }
+           
+           const formData = new FormData();
+           formData.append('action', 'delete_wallet');
+           formData.append('wallet_db_id', walletDbId);
+           
+           fetch('', {
+               method: 'POST',
+               body: formData
+           })
+           .then(response => response.text())
+           .then(() => {
+               showToast('Wallet ID excluído com sucesso!', 'success');
+               setTimeout(() => location.reload(), 1500);
+           })
+           .catch(error => {
+               showToast('Erro ao excluir: ' + error.message, 'error');
+           });
+       }
+       
+       // ===== GERENCIAMENTO DE SPLITS EM PAGAMENTOS =====
+       function addSplit() {
+           const container = document.getElementById('splits-container');
+           
+           // Obter lista de wallet IDs para o novo split
+           const walletOptions = Array.from(document.querySelector('select[name="splits[0][walletId]"]').options)
+               .map(option => `<option value="${option.value}">${option.textContent}</option>`)
+               .join('');
+           
+           const splitHtml = `
+               <div class="split-item p-3 mb-3">
+                   <div class="split-remove-btn">
+                       <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeSplit(this)">
+                           <i class="bi bi-trash"></i>
+                       </button>
+                   </div>
+                   
+                   <div class="mb-3">
+                       <label class="form-label">Destinatário</label>
+                       <select class="form-select" name="splits[${splitCounter}][walletId]">
+                           ${walletOptions}
+                       </select>
+                   </div>
+                   
+                   <div class="row">
+                       <div class="col-6">
+                           <label class="form-label">Percentual (%)</label>
+                           <input type="number" class="form-control" name="splits[${splitCounter}][percentualValue]" 
+                                  step="0.01" max="100" placeholder="0.00">
+                       </div>
+                       <div class="col-6">
+                           <label class="form-label">Valor Fixo (R$)</label>
+                           <input type="number" class="form-control" name="splits[${splitCounter}][fixedValue]" 
+                                  step="0.01" placeholder="0.00">
+                       </div>
+                   </div>
+               </div>
+           `;
+           
+           container.insertAdjacentHTML('beforeend', splitHtml);
+           splitCounter++;
+       }
+       
+       function removeSplit(button) {
+           if (document.querySelectorAll('.split-item').length > 1) {
+               button.closest('.split-item').remove();
+           } else {
+               showToast('Deve haver pelo menos um campo de split', 'warning');
+           }
+       }
+       
+       // ===== CONEXÃO E TESTES =====
+       function testConnection() {
+           const btn = event.target.closest('button');
+           const originalText = btn.innerHTML;
+           btn.innerHTML = '<span class="loading me-2"></span>Testando...';
+           btn.disabled = true;
+           
+           const formData = new FormData();
+           formData.append('action', 'test_connection');
+           
+           fetch('', {
+               method: 'POST',
+               body: formData
+           })
+           .then(response => response.text())
+           .then(() => {
+               showToast('Conexão testada com sucesso!', 'success');
+               setTimeout(() => location.reload(), 2000);
+           })
+           .catch(error => {
+               showToast('Erro na conexão: ' + error.message, 'error');
+           })
+           .finally(() => {
+               btn.innerHTML = originalText;
+               btn.disabled = false;
+           });
+       }
+       
+       function refreshDashboard() {
+           showToast('Atualizando dashboard...', 'info');
+           setTimeout(() => location.reload(), 1000);
+       }
+       
+       function refreshActivity() {
+           // Implementar refresh via AJAX se necessário
+           console.log('🔄 Refresh automático da atividade');
+       }
+       
+       // ===== RELATÓRIOS =====
+       function generateReport() {
+           const startDate = document.getElementById('start-date').value;
+           const endDate = document.getElementById('end-date').value;
+           
+           if (!startDate || !endDate) {
+               showToast('Selecione as datas para o relatório', 'warning');
+               return;
+           }
+           
+           if (new Date(startDate) > new Date(endDate)) {
+               showToast('Data inicial não pode ser maior que a data final', 'warning');
+               return;
+           }
+           
+           const resultsDiv = document.getElementById('report-results');
+           resultsDiv.innerHTML = `
+               <div class="text-center p-4">
+                   <div class="spinner-border text-primary mb-3" role="status"></div>
+                   <p>Gerando relatório...</p>
+               </div>
+           `;
+           
+           // Simular chamada AJAX para relatório
+           setTimeout(() => {
+               resultsDiv.innerHTML = `
+                   <div class="alert alert-success">
+                       <h6><i class="bi bi-check-circle me-2"></i>Relatório Gerado</h6>
+                       <p>Período: ${startDate} a ${endDate}</p>
+                       <p>Contexto: ${SystemConfig.user.polo_nome || 'Todos os Polos'}</p>
+                       <small>Funcionalidade de relatórios será implementada via API</small>
+                   </div>
+               `;
+           }, 2000);
+       }
+       
+       function generateWalletReport() {
+           showToast('Gerando relatório de Wallet IDs...', 'info');
+           // Implementar via API
+       }
+       
+       function exportReport(format) {
+           showToast(`Exportando relatório em formato ${format.toUpperCase()}...`, 'info');
+           // Implementar via API
+       }
+       
+       // ===== UTILITÁRIOS =====
+       function showToast(message, type = 'info') {
+           const toastClass = {
+               success: 'text-bg-success',
+               error: 'text-bg-danger', 
+               warning: 'text-bg-warning',
+               info: 'text-bg-info'
+           }[type] || 'text-bg-info';
+           
+           const iconClass = {
+               success: 'bi-check-circle',
+               error: 'bi-exclamation-triangle',
+               warning: 'bi-exclamation-triangle',
+               info: 'bi-info-circle'
+           }[type] || 'bi-info-circle';
+           
+           const toastHtml = `
+               <div class="position-fixed top-0 end-0 p-3" style="z-index: 9999;">
+                   <div class="toast show ${toastClass}" role="alert">
+                       <div class="d-flex">
+                           <div class="toast-body">
+                               <i class="bi ${iconClass} me-2"></i>
+                               ${message}
+                           </div>
+                           <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                       </div>
+                   </div>
+               </div>
+           `;
+           
+           document.body.insertAdjacentHTML('beforeend', toastHtml);
+           
+           // Auto-remove após 5 segundos
+           setTimeout(() => {
+               const toasts = document.querySelectorAll('.toast');
+               if (toasts.length > 0) {
+                   toasts[toasts.length - 1].closest('div').remove();
+               }
+           }, 5000);
+       }
+       
+       function logout() {
+           if (confirm('Deseja realmente sair do sistema?')) {
+               window.location.href = 'login.php?action=logout';
+           }
+       }
+       
+       // ===== MÁSCARAS DE INPUT =====
+       function addInputMasks() {
+           // CPF/CNPJ
+           document.querySelectorAll('input[name*="cpfCnpj"]').forEach(input => {
+               input.addEventListener('input', function(e) {
+                   let value = e.target.value.replace(/\D/g, '');
+                   
+                   if (value.length <= 11) {
+                       value = value.replace(/(\d{3})(\d)/, '$1.$2');
+                       value = value.replace(/(\d{3})(\d)/, '$1.$2');
+                       value = value.replace(/(\d{3})(\d{1,2})$/, '$1-$2');
+                   } else {
+                       value = value.replace(/^(\d{2})(\d)/, '$1.$2');
+                       value = value.replace(/^(\d{2})\.(\d{3})(\d)/, '$1.$2.$3');
+                       value = value.replace(/\.(\d{3})(\d)/, '.$1/$2');
+                       value = value.replace(/(\d{4})(\d)/, '$1-$2');
+                   }
+                   
+                   e.target.value = value;
+               });
+           });
+           
+           // Telefone
+           document.querySelectorAll('input[name*="Phone"]').forEach(input => {
+               input.addEventListener('input', function(e) {
+                   let value = e.target.value.replace(/\D/g, '');
+                   
+                   if (value.length > 11) value = value.substring(0, 11);
+                   
+                   if (value.length <= 10) {
+                       value = value.replace(/^(\d{2})(\d)/, '($1) $2');
+                       value = value.replace(/(\d{4})(\d)/, '$1-$2');
+                   } else {
+                       value = value.replace(/^(\d{2})(\d)/, '($1) $2');
+                       value = value.replace(/(\d{5})(\d)/, '$1-$2');
+                   }
+                   
+                   e.target.value = value;
+               });
+           });
+       }
+       
+       // ===== VALIDAÇÕES DE FORMULÁRIO =====
+       function setupFormValidations() {
+           // Confirmação obrigatória para pagamento
+           const confirmCheckbox = document.getElementById('confirm-payment');
+           const submitButton = document.getElementById('submit-payment');
+           
+           if (confirmCheckbox && submitButton) {
+               confirmCheckbox.addEventListener('change', function() {
+                   submitButton.disabled = !this.checked;
+               });
+           }
+           
+           // Validação de Wallet ID UUID
+           document.querySelectorAll('input[name*="wallet_id"]').forEach(input => {
+               input.addEventListener('blur', function() {
+                   const value = this.value.trim();
+                   if (value && !isValidUUID(value)) {
+                       this.classList.add('is-invalid');
+                       showToast('Formato de Wallet ID inválido. Use formato UUID.', 'warning');
+                   } else {
+                       this.classList.remove('is-invalid');
+                   }
+               });
+           });
+       }
+       
+       function isValidUUID(uuid) {
+           const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+           return uuidRegex.test(uuid);
+       }
+       
+       // ===== MONITORAMENTO DO SISTEMA =====
+       function checkSystemHealth() {
+           // Verificação silenciosa da saúde do sistema
+           console.log('🔍 Verificando saúde do sistema...');
+       }
+       
+       function loadRecentPayments() {
+           // Carregar pagamentos via AJAX se necessário
+           console.log('📊 Carregando pagamentos recentes...');
+       }
+       
+       function updateQuickStats() {
+           // Atualizar estatísticas rápidas
+           console.log('📈 Atualizando estatísticas...');
+       }
+       
+       // ===== ATALHOS DE TECLADO =====
+       document.addEventListener('keydown', function(e) {
+           // Ctrl + 1-5 para navegação rápida
+           if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+               const sections = ['dashboard', 'customers', 'wallets', 'payments', 'reports'];
+               const key = parseInt(e.key);
+               if (key >= 1 && key <= sections.length) {
+                   e.preventDefault();
+                   showSection(sections[key - 1]);
+               }
+           }
+           
+           // ESC para voltar ao dashboard
+           if (e.key === 'Escape') {
+               showSection('dashboard');
+           }
+       });
+       
+       // Log de inicialização completa
+       window.addEventListener('load', function() {
+           console.log('🎉 Sistema IMEP Split ASAAS v3.0 totalmente carregado');
+           console.log('⌨️ Atalhos: Ctrl+1-5 para navegação, ESC para dashboard');
+       });
+   </script>
 </body>
-</html>
+</html>    

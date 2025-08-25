@@ -1,33 +1,33 @@
 <?php
 /**
- * Sistema de Autenticação Multi-Tenant - VERSÃO CORRIGIDA
+ * Sistema de Autenticação Multi-Tenant - VERSÃO FINAL CORRIGIDA
  * Arquivo: auth.php
  * 
- * Fix: Resolve problemas com headers e sessões
+ * IMPORTANTE: Este arquivo implementa verificação rigorosa de autenticação
  */
 
-// Iniciar sessão de forma segura - verificar se já não foi iniciada
+// Configurações de sessão seguras
 if (session_status() === PHP_SESSION_NONE) {
-    // Configurar sessão antes de iniciar
     ini_set('session.cookie_httponly', 1);
     ini_set('session.use_strict_mode', 1);
     ini_set('session.cookie_secure', isset($_SERVER['HTTPS']) ? 1 : 0);
+    ini_set('session.cookie_samesite', 'Strict');
+    ini_set('session.gc_maxlifetime', 7200); // 2 horas
     
     session_start();
 }
 
 /**
- * Classe principal de autenticação - VERSÃO CORRIGIDA
+ * Classe principal de autenticação - VERSÃO FINAL
  */
 class AuthSystem {
     
     private $db;
-    private $sessionTimeout = 7200; // 2 horas em segundos
+    private $sessionTimeout = 7200; // 2 horas
     private $maxLoginAttempts = 5;
-    private $lockoutTime = 900; // 15 minutos em segundos
+    private $lockoutTime = 900; // 15 minutos
     
     public function __construct() {
-        // Verificar se DatabaseManager existe antes de instanciar
         if (class_exists('DatabaseManager')) {
             try {
                 $this->db = DatabaseManager::getInstance();
@@ -35,17 +35,7 @@ class AuthSystem {
                 error_log("Auth: Erro ao conectar com banco: " . $e->getMessage());
                 $this->db = null;
             }
-        } else {
-            error_log("Auth: Classe DatabaseManager não encontrada");
-            $this->db = null;
         }
-    }
-    
-    /**
-     * Verificar se o banco está disponível
-     */
-    private function isDatabaseAvailable() {
-        return $this->db !== null;
     }
     
     /**
@@ -54,10 +44,9 @@ class AuthSystem {
     public function login($email, $senha, $lembrar = false) {
         try {
             if (!$this->isDatabaseAvailable()) {
-                throw new Exception('Sistema temporariamente indisponível. Tente novamente em alguns minutos.');
+                throw new Exception('Sistema temporariamente indisponível');
             }
             
-            // Verificar se usuário existe e não está bloqueado
             $usuario = $this->getUsuario($email);
             
             if (!$usuario) {
@@ -70,26 +59,23 @@ class AuthSystem {
             
             // Verificar se está bloqueado
             if ($this->isUsuarioBloqueado($usuario)) {
-                throw new Exception('Usuário temporariamente bloqueado. Tente novamente mais tarde.');
+                throw new Exception('Usuário temporariamente bloqueado por tentativas excessivas');
             }
             
             // Verificar se usuário está ativo
             if (!$usuario['is_active']) {
-                throw new Exception('Usuário desativado. Entre em contato com o administrador.');
+                throw new Exception('Usuário desativado. Entre em contato com o administrador');
             }
             
             // Verificar senha
             if (!password_verify($senha, $usuario['senha'])) {
                 $this->incrementarTentativasLogin($usuario['id']);
-                $this->logAuditoria($usuario['id'], $usuario['polo_id'], 'login_falhou', 'usuarios', $usuario['id'], [
-                    'motivo' => 'Senha incorreta'
-                ]);
                 throw new Exception('Email ou senha inválidos');
             }
             
-            // Verificar se polo está ativo (se não for master)
+            // Verificar se polo está ativo (se aplicável)
             if ($usuario['polo_id'] && !$this->isPoloAtivo($usuario['polo_id'])) {
-                throw new Exception('Polo desativado. Entre em contato com o administrador.');
+                throw new Exception('Seu polo foi desativado. Entre em contato com o administrador');
             }
             
             // Login bem-sucedido
@@ -132,18 +118,28 @@ class AuthSystem {
                     $stmt = $this->db->getConnection()->prepare("DELETE FROM sessoes WHERE id = ?");
                     $stmt->execute([$_SESSION['sessao_id']]);
                 } catch (Exception $e) {
-                    error_log("Auth: Erro ao remover sessão do banco: " . $e->getMessage());
+                    error_log("Auth: Erro ao remover sessão: " . $e->getMessage());
                 }
             }
         }
         
-        // Limpar sessão
+        // Limpar sessão PHP
         if (session_status() === PHP_SESSION_ACTIVE) {
-            session_unset();
+            $_SESSION = [];
+            
+            // Destruir cookie de sessão
+            if (ini_get("session.use_cookies")) {
+                $params = session_get_cookie_params();
+                setcookie(session_name(), '', time() - 42000,
+                    $params["path"], $params["domain"],
+                    $params["secure"], $params["httponly"]
+                );
+            }
+            
             session_destroy();
         }
         
-        // Limpar cookie se existir
+        // Limpar cookie personalizado
         if (isset($_COOKIE['sessao_id'])) {
             setcookie('sessao_id', '', time() - 3600, '/');
         }
@@ -152,14 +148,40 @@ class AuthSystem {
     }
     
     /**
-     * Verificar se usuário está logado
+     * Verificar se usuário está logado - VERSÃO RIGOROSA
      */
     public function isLogado() {
-        if (!isset($_SESSION['usuario_id']) || !isset($_SESSION['sessao_id'])) {
+        // Verificações básicas da sessão
+        if (!isset($_SESSION['usuario_id']) || 
+            !isset($_SESSION['sessao_id']) || 
+            !isset($_SESSION['usuario_email'])) {
             return false;
         }
         
-        return $this->validarSessao();
+        // Verificar se a sessão não expirou
+        if (isset($_SESSION['ultima_atividade'])) {
+            if (time() - $_SESSION['ultima_atividade'] > $this->sessionTimeout) {
+                $this->logout();
+                return false;
+            }
+        }
+        
+        // Verificar sessão no banco de dados
+        if (!$this->validarSessao()) {
+            $this->logout();
+            return false;
+        }
+        
+        // Verificar se usuário ainda está ativo
+        if (!$this->isUsuarioAindaAtivo($_SESSION['usuario_id'])) {
+            $this->logout();
+            return false;
+        }
+        
+        // Atualizar timestamp da última atividade
+        $_SESSION['ultima_atividade'] = time();
+        
+        return true;
     }
     
     /**
@@ -171,13 +193,15 @@ class AuthSystem {
         }
         
         return [
-            'id' => $_SESSION['usuario_id'] ?? null,
-            'nome' => $_SESSION['usuario_nome'] ?? null,
-            'email' => $_SESSION['usuario_email'] ?? null,
-            'tipo' => $_SESSION['usuario_tipo'] ?? null,
+            'id' => $_SESSION['usuario_id'],
+            'nome' => $_SESSION['usuario_nome'],
+            'email' => $_SESSION['usuario_email'],
+            'tipo' => $_SESSION['usuario_tipo'],
             'polo_id' => $_SESSION['polo_id'] ?? null,
             'polo_nome' => $_SESSION['polo_nome'] ?? null,
-            'permissoes' => $_SESSION['permissoes'] ?? []
+            'permissoes' => $_SESSION['permissoes'] ?? [],
+            'is_active' => $_SESSION['is_active'] ?? true,
+            'ultimo_login' => $_SESSION['ultimo_login'] ?? null
         ];
     }
     
@@ -194,13 +218,34 @@ class AuthSystem {
             return true;
         }
         
-        // Verificar permissões específicas
-        $permissoes = $_SESSION['permissoes'] ?? [];
-        return in_array($permissao, $permissoes) || in_array('*', $permissoes);
+        // Definir permissões por tipo de usuário
+        $permissoesPorTipo = [
+            'admin_polo' => [
+                'gerenciar_clientes', 
+                'gerenciar_wallets', 
+                'gerenciar_contas_split', 
+                'gerenciar_pagamentos',
+                'ver_relatorios', 
+                'configurar_polo',
+                'testar_conexao',
+                'sincronizar_contas'
+            ],
+            'operador' => [
+                'gerenciar_clientes', 
+                'gerenciar_wallets', 
+                'gerenciar_pagamentos',
+                'ver_relatorios'
+            ]
+        ];
+        
+        $tipoUsuario = $_SESSION['usuario_tipo'] ?? '';
+        $permissoesPermitidas = $permissoesPorTipo[$tipoUsuario] ?? [];
+        
+        return in_array($permissao, $permissoesPermitidas);
     }
     
     /**
-     * Verificar se é admin do polo atual
+     * Verificar se é admin do polo
      */
     public function isAdminPolo() {
         return $this->isLogado() && ($_SESSION['usuario_tipo'] ?? '') === 'admin_polo';
@@ -214,73 +259,14 @@ class AuthSystem {
     }
     
     /**
-     * Obter configurações do ASAAS para o polo atual
-     */
-    public function getAsaasConfig() {
-        if (!$this->isLogado()) {
-            throw new Exception('Usuário não logado');
-        }
-        
-        if (!$this->isDatabaseAvailable()) {
-            // Fallback para configurações globais se banco não disponível
-            return [
-                'environment' => defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox',
-                'production_key' => defined('ASAAS_PRODUCTION_API_KEY') ? ASAAS_PRODUCTION_API_KEY : null,
-                'sandbox_key' => defined('ASAAS_SANDBOX_API_KEY') ? ASAAS_SANDBOX_API_KEY : null,
-                'webhook_token' => defined('ASAAS_WEBHOOK_TOKEN') ? ASAAS_WEBHOOK_TOKEN : null
-            ];
-        }
-        
-        // Master usa configurações globais
-        if ($this->isMaster()) {
-            return [
-                'environment' => defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox',
-                'production_key' => defined('ASAAS_PRODUCTION_API_KEY') ? ASAAS_PRODUCTION_API_KEY : null,
-                'sandbox_key' => defined('ASAAS_SANDBOX_API_KEY') ? ASAAS_SANDBOX_API_KEY : null,
-                'webhook_token' => defined('ASAAS_WEBHOOK_TOKEN') ? ASAAS_WEBHOOK_TOKEN : null
-            ];
-        }
-        
-        // Usuários de polo usam configurações específicas
-        $poloId = $_SESSION['polo_id'] ?? null;
-        if (!$poloId) {
-            throw new Exception('Polo não identificado');
-        }
-        
-        try {
-            $stmt = $this->db->getConnection()->prepare("
-                SELECT asaas_environment, asaas_production_api_key, asaas_sandbox_api_key, asaas_webhook_token 
-                FROM polos WHERE id = ? AND is_active = 1
-            ");
-            $stmt->execute([$poloId]);
-            $polo = $stmt->fetch();
-            
-            if (!$polo) {
-                throw new Exception('Polo não encontrado ou inativo');
-            }
-            
-            return [
-                'environment' => $polo['asaas_environment'] ?? 'sandbox',
-                'production_key' => $polo['asaas_production_api_key'],
-                'sandbox_key' => $polo['asaas_sandbox_api_key'],
-                'webhook_token' => $polo['asaas_webhook_token']
-            ];
-        } catch (Exception $e) {
-            error_log("Auth: Erro ao obter config ASAAS: " . $e->getMessage());
-            throw $e;
-        }
-    }
-    
-    /**
      * Middleware para verificar login
      */
     public function requireLogin($redirect = 'login.php') {
         if (!$this->isLogado()) {
             // Salvar URL atual para redirect após login
-            if (!isset($_SESSION['redirect_after_login'])) {
-                $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '';
-            }
+            $_SESSION['redirect_after_login'] = $_SERVER['REQUEST_URI'] ?? '';
             
+            // Fazer redirect
             if (!headers_sent()) {
                 header("Location: {$redirect}");
                 exit;
@@ -294,15 +280,23 @@ class AuthSystem {
     /**
      * Middleware para verificar permissão
      */
-    public function requirePermission($permissao, $redirect = 'acesso_negado.php') {
+    public function requirePermission($permissao, $errorMessage = null) {
         $this->requireLogin();
         
         if (!$this->temPermissao($permissao)) {
+            if ($errorMessage) {
+                $_SESSION['error_message'] = $errorMessage;
+            }
+            
             if (!headers_sent()) {
-                header("Location: {$redirect}");
+                header('HTTP/1.0 403 Forbidden');
+                header('Location: acesso_negado.php');
                 exit;
             } else {
-                echo "<script>window.location.href = '{$redirect}';</script>";
+                showError(
+                    $errorMessage ?? 'Você não tem permissão para acessar esta funcionalidade.',
+                    'Acesso Negado'
+                );
                 exit;
             }
         }
@@ -311,6 +305,13 @@ class AuthSystem {
     // =====================================
     // MÉTODOS PRIVADOS
     // =====================================
+    
+    /**
+     * Verificar se o banco está disponível
+     */
+    private function isDatabaseAvailable() {
+        return $this->db !== null;
+    }
     
     /**
      * Obter usuário pelo email
@@ -322,7 +323,7 @@ class AuthSystem {
         
         try {
             $stmt = $this->db->getConnection()->prepare("
-                SELECT u.*, p.nome as polo_nome, p.codigo as polo_codigo
+                SELECT u.*, p.nome as polo_nome, p.codigo as polo_codigo, p.is_active as polo_ativo
                 FROM usuarios u
                 LEFT JOIN polos p ON u.polo_id = p.id
                 WHERE u.email = ?
@@ -339,11 +340,15 @@ class AuthSystem {
      * Verificar se usuário está bloqueado
      */
     private function isUsuarioBloqueado($usuario) {
-        if (!$usuario['bloqueado_ate']) {
-            return $usuario['tentativas_login'] >= $this->maxLoginAttempts;
+        if ($usuario['tentativas_login'] >= $this->maxLoginAttempts) {
+            return true;
         }
         
-        return new DateTime() < new DateTime($usuario['bloqueado_ate']);
+        if ($usuario['bloqueado_ate']) {
+            return new DateTime() < new DateTime($usuario['bloqueado_ate']);
+        }
+        
+        return false;
     }
     
     /**
@@ -351,17 +356,53 @@ class AuthSystem {
      */
     private function isPoloAtivo($poloId) {
         if (!$this->isDatabaseAvailable()) {
-            return true; // Assumir ativo se não pode verificar
+            return true;
         }
         
         try {
-            $stmt = $this->db->getConnection()->prepare("SELECT is_active FROM polos WHERE id = ?");
+            $stmt = $this->db->getConnection()->prepare("
+                SELECT is_active FROM polos WHERE id = ?
+            ");
             $stmt->execute([$poloId]);
             $result = $stmt->fetch();
             return $result && $result['is_active'];
         } catch (Exception $e) {
             error_log("Auth: Erro ao verificar polo: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Verificar se usuário ainda está ativo
+     */
+    private function isUsuarioAindaAtivo($usuarioId) {
+        if (!$this->isDatabaseAvailable()) {
             return true;
+        }
+        
+        try {
+            $stmt = $this->db->getConnection()->prepare("
+                SELECT u.is_active, p.is_active as polo_ativo 
+                FROM usuarios u
+                LEFT JOIN polos p ON u.polo_id = p.id
+                WHERE u.id = ?
+            ");
+            $stmt->execute([$usuarioId]);
+            $result = $stmt->fetch();
+            
+            if (!$result || !$result['is_active']) {
+                return false;
+            }
+            
+            // Se tem polo, verificar se está ativo
+            if ($result['polo_ativo'] !== null && !$result['polo_ativo']) {
+                return false;
+            }
+            
+            return true;
+        } catch (Exception $e) {
+            error_log("Auth: Erro ao verificar atividade do usuário: " . $e->getMessage());
+            return false;
         }
     }
     
@@ -410,15 +451,26 @@ class AuthSystem {
     }
     
     /**
-     * Criar sessão
+     * Criar sessão segura
      */
     private function criarSessao($usuario, $lembrar = false) {
+        // Regenerar ID da sessão para prevenir fixation
+        session_regenerate_id(true);
+        
         $sessaoId = bin2hex(random_bytes(32));
         $expiraEm = date('Y-m-d H:i:s', time() + ($lembrar ? 86400 * 30 : $this->sessionTimeout));
         
-        // Salvar sessão no banco se disponível
+        // Salvar sessão no banco
         if ($this->isDatabaseAvailable()) {
             try {
+                // Primeiro, limpar sessões antigas do usuário
+                $stmt = $this->db->getConnection()->prepare("
+                    DELETE FROM sessoes 
+                    WHERE usuario_id = ? OR expira_em < NOW()
+                ");
+                $stmt->execute([$usuario['id']]);
+                
+                // Criar nova sessão
                 $stmt = $this->db->getConnection()->prepare("
                     INSERT INTO sessoes (id, usuario_id, polo_id, ip_address, user_agent, expira_em) 
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -432,11 +484,11 @@ class AuthSystem {
                     $expiraEm
                 ]);
             } catch (Exception $e) {
-                error_log("Auth: Erro ao salvar sessão no banco: " . $e->getMessage());
+                error_log("Auth: Erro ao salvar sessão: " . $e->getMessage());
             }
         }
         
-        // Configurar sessão PHP
+        // Configurar variáveis da sessão
         $_SESSION['sessao_id'] = $sessaoId;
         $_SESSION['usuario_id'] = $usuario['id'];
         $_SESSION['usuario_nome'] = $usuario['nome'];
@@ -444,12 +496,23 @@ class AuthSystem {
         $_SESSION['usuario_tipo'] = $usuario['tipo'];
         $_SESSION['polo_id'] = $usuario['polo_id'];
         $_SESSION['polo_nome'] = $usuario['polo_nome'];
-        $_SESSION['permissoes'] = json_decode($usuario['permissoes'] ?? '[]', true);
+        $_SESSION['is_active'] = $usuario['is_active'];
+        $_SESSION['ultimo_login'] = $usuario['ultimo_login'];
+        $_SESSION['login_time'] = time();
+        $_SESSION['ultima_atividade'] = time();
+        $_SESSION['ip_address'] = $this->getClientIP();
+        $_SESSION['user_agent'] = $_SERVER['HTTP_USER_AGENT'] ?? '';
         
         // Cookie se "lembrar"
         if ($lembrar && !headers_sent()) {
-            setcookie('sessao_id', $sessaoId, time() + (86400 * 30), '/', '', 
-                isset($_SERVER['HTTPS']), true);
+            setcookie('sessao_id', $sessaoId, [
+                'expires' => time() + (86400 * 30),
+                'path' => '/',
+                'domain' => '',
+                'secure' => isset($_SERVER['HTTPS']),
+                'httponly' => true,
+                'samesite' => 'Strict'
+            ]);
         }
     }
     
@@ -457,20 +520,19 @@ class AuthSystem {
      * Validar sessão atual
      */
     private function validarSessao() {
-        $sessaoId = $_SESSION['sessao_id'] ?? ($_COOKIE['sessao_id'] ?? null);
+        $sessaoId = $_SESSION['sessao_id'] ?? null;
         
-        if (!$sessaoId) {
+        if (!$sessaoId || !$this->isDatabaseAvailable()) {
             return false;
-        }
-        
-        if (!$this->isDatabaseAvailable()) {
-            // Se banco não disponível, validar apenas por tempo de sessão PHP
-            return true;
         }
         
         try {
             $stmt = $this->db->getConnection()->prepare("
-                SELECT * FROM sessoes WHERE id = ? AND expira_em > NOW()
+                SELECT s.*, u.is_active as usuario_ativo, p.is_active as polo_ativo
+                FROM sessoes s
+                JOIN usuarios u ON s.usuario_id = u.id
+                LEFT JOIN polos p ON s.polo_id = p.id
+                WHERE s.id = ? AND s.expira_em > NOW()
             ");
             $stmt->execute([$sessaoId]);
             $sessao = $stmt->fetch();
@@ -479,7 +541,22 @@ class AuthSystem {
                 return false;
             }
             
-            // Atualizar última atividade
+            // Verificar se usuário ainda está ativo
+            if (!$sessao['usuario_ativo']) {
+                return false;
+            }
+            
+            // Verificar se polo ainda está ativo (se aplicável)
+            if ($sessao['polo_id'] && !$sessao['polo_ativo']) {
+                return false;
+            }
+            
+            // Verificar IP (opcional - pode causar problemas com proxies)
+            // if ($sessao['ip_address'] !== $this->getClientIP()) {
+            //     return false;
+            // }
+            
+            // Atualizar última atividade na sessão
             $stmt = $this->db->getConnection()->prepare("
                 UPDATE sessoes SET ultima_atividade = NOW() WHERE id = ?
             ");
@@ -521,7 +598,8 @@ class AuthSystem {
             'tipo' => $usuario['tipo'],
             'polo_id' => $usuario['polo_id'],
             'polo_nome' => $usuario['polo_nome'],
-            'ultimo_login' => $usuario['ultimo_login']
+            'ultimo_login' => $usuario['ultimo_login'],
+            'is_active' => $usuario['is_active']
         ];
     }
     
@@ -533,15 +611,18 @@ class AuthSystem {
         if (isset($_SESSION['redirect_after_login'])) {
             $redirect = $_SESSION['redirect_after_login'];
             unset($_SESSION['redirect_after_login']);
-            return $redirect;
+            
+            // Verificar se é uma URL segura
+            if (strpos($redirect, 'login.php') === false && 
+                strpos($redirect, 'logout') === false) {
+                return $redirect;
+            }
         }
         
-        // Redirect padrão baseado no tipo de usuário
+        // Redirect padrão baseado no tipo
         switch ($usuario['tipo']) {
             case 'master':
                 return 'admin_master.php';
-            case 'admin_polo':
-                return 'index.php';
             default:
                 return 'index.php';
         }
@@ -551,16 +632,28 @@ class AuthSystem {
      * Obter IP do cliente
      */
     private function getClientIP() {
-        $ipKeys = ['HTTP_CLIENT_IP', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR'];
+        $ipKeys = [
+            'HTTP_CF_CONNECTING_IP',     // Cloudflare
+            'HTTP_CLIENT_IP', 
+            'HTTP_X_FORWARDED_FOR', 
+            'HTTP_X_FORWARDED', 
+            'HTTP_X_CLUSTER_CLIENT_IP', 
+            'HTTP_FORWARDED_FOR', 
+            'HTTP_FORWARDED', 
+            'REMOTE_ADDR'
+        ];
         
         foreach ($ipKeys as $key) {
             if (!empty($_SERVER[$key])) {
                 $ips = explode(',', $_SERVER[$key]);
-                return trim($ips[0]);
+                $ip = trim($ips[0]);
+                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    return $ip;
+                }
             }
         }
         
-        return 'unknown';
+        return $_SERVER['REMOTE_ADDR'] ?? 'unknown';
     }
     
     /**
@@ -592,73 +685,34 @@ class AuthSystem {
             error_log("Auth: Erro ao gravar auditoria: " . $e->getMessage());
         }
     }
-}
-
-/**
- * Classe para gerenciar polos - VERSÃO CORRIGIDA
- */
-class PoloManager {
-    
-    private $db;
-    private $auth;
-    
-    public function __construct() {
-        if (class_exists('DatabaseManager')) {
-            try {
-                $this->db = DatabaseManager::getInstance();
-            } catch (Exception $e) {
-                error_log("PoloManager: Erro ao conectar com banco: " . $e->getMessage());
-                $this->db = null;
-            }
-        }
-        $this->auth = new AuthSystem();
-    }
     
     /**
-     * Verificar se o banco está disponível
+     * Limpar sessões expiradas (método de limpeza)
      */
-    private function isDatabaseAvailable() {
-        return $this->db !== null;
-    }
-    
-    /**
-     * Listar polos (apenas para master)
-     */
-    public function listarPolos($incluirInativos = false) {
-        if (!$this->auth->isMaster()) {
-            throw new Exception('Acesso negado');
-        }
-        
+    public function limparSessoesExpiradas() {
         if (!$this->isDatabaseAvailable()) {
-            throw new Exception('Sistema temporariamente indisponível');
+            return 0;
         }
-        
-        $whereClause = $incluirInativos ? '' : 'WHERE is_active = 1';
         
         try {
-            $stmt = $this->db->getConnection()->query("
-                SELECT p.*, 
-                       (SELECT COUNT(*) FROM usuarios WHERE polo_id = p.id AND is_active = 1) as total_usuarios
-                FROM polos p 
-                {$whereClause}
-                ORDER BY nome
+            $stmt = $this->db->getConnection()->prepare("
+                DELETE FROM sessoes WHERE expira_em < NOW()
             ");
-            
-            return $stmt->fetchAll();
+            $stmt->execute();
+            return $stmt->rowCount();
         } catch (Exception $e) {
-            error_log("PoloManager: Erro ao listar polos: " . $e->getMessage());
-            throw $e;
+            error_log("Auth: Erro ao limpar sessões: " . $e->getMessage());
+            return 0;
         }
     }
-    
-    // Outros métodos mantidos conforme versão anterior...
 }
 
-// Instância global para uso fácil - com verificação
+// Instância global para uso fácil
 try {
-    $auth = new AuthSystem();
+    if (!isset($auth)) {
+        $auth = new AuthSystem();
+    }
 } catch (Exception $e) {
-    error_log("Erro ao inicializar AuthSystem: " . $e->getMessage());
+    error_log("Erro ao inicializar AuthSystem global: " . $e->getMessage());
     $auth = null;
 }
-?>
