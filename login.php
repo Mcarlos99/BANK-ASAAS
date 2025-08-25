@@ -163,14 +163,14 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
                         </div>
                     </form>
                     
-                    <!-- Credenciais de Teste -->
+                    <!-- Credenciais de Teste 
                     <div class="alert alert-info">
                         <h6><i class="bi bi-info-circle"></i> Credenciais de Teste</h6>
                         <small>
                             <strong>Email:</strong> admin@imepedu.com.br<br>
-                            <strong>Senha:</strong> admin123
+                            <strong>Senha:</strong> a123
                         </small>
-                    </div>
+                    </div>-->
                     
                     <!-- Debug Info (remover em produção) -->
                     <?php if (!empty($debug) && defined('DEBUG') && DEBUG): ?>

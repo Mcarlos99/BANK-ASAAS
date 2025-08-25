@@ -61,45 +61,105 @@ class DatabaseManager {
      */
     public function saveWalletId($walletData) {
         try {
-            // Log para debug
-            error_log("DatabaseManager::saveWalletId - Dados recebidos: " . json_encode($walletData));
+            error_log("=== INÍCIO VERIFICAÇÃO WALLET ID ===");
+            error_log("Dados recebidos: " . json_encode($walletData));
             
+            $walletId = $walletData['wallet_id'];
+            $novoPoloId = $walletData['polo_id']; // Pode ser NULL para master
+            
+            error_log("UUID: {$walletId}");
+            error_log("Novo Polo ID: " . ($novoPoloId ?? 'NULL'));
+            
+            // VERIFICAÇÃO CORRIGIDA: Buscar apenas no MESMO polo
+            if ($novoPoloId === null) {
+                // Para registros globais (master), verificar apenas outros globais
+                $checkStmt = $this->pdo->prepare("
+                    SELECT id, name, polo_id FROM wallet_ids 
+                    WHERE wallet_id = ? AND polo_id IS NULL
+                ");
+                $checkStmt->execute([$walletId]);
+            } else {
+                // Para registros de polo específico, verificar apenas no mesmo polo
+                $checkStmt = $this->pdo->prepare("
+                    SELECT id, name, polo_id FROM wallet_ids 
+                    WHERE wallet_id = ? AND polo_id = ?
+                ");
+                $checkStmt->execute([$walletId, $novoPoloId]);
+            }
+            
+            $existing = $checkStmt->fetch();
+            
+            error_log("Resultado verificação: " . json_encode($existing));
+            
+            if ($existing) {
+                error_log("ERRO: Encontrado registro existente no MESMO contexto");
+                error_log("Existing ID: {$existing['id']}, Nome: {$existing['name']}, Polo: " . ($existing['polo_id'] ?? 'NULL'));
+                
+                $contexto = $novoPoloId ? "no polo ID {$novoPoloId}" : "como registro global";
+                throw new Exception("Este Wallet ID já está cadastrado {$contexto}: {$existing['name']}");
+            }
+            
+            // LOG: Verificar se existe em outros polos (só para informação)
+            $allExistingStmt = $this->pdo->prepare("
+                SELECT id, name, polo_id, 
+                       CASE WHEN polo_id IS NULL THEN 'Global' ELSE CONCAT('Polo ', polo_id) END as polo_display
+                FROM wallet_ids 
+                WHERE wallet_id = ?
+            ");
+            $allExistingStmt->execute([$walletId]);
+            $allExisting = $allExistingStmt->fetchAll();
+            
+            error_log("Todos os registros existentes com este UUID: " . json_encode($allExisting));
+            
+            if (!empty($allExisting)) {
+                $existingInfo = [];
+                foreach ($allExisting as $record) {
+                    $existingInfo[] = "{$record['name']} ({$record['polo_display']})";
+                }
+                error_log("INFO: UUID já existe em: " . implode(', ', $existingInfo));
+            }
+            
+            // INSERIR NOVO REGISTRO
             $stmt = $this->pdo->prepare("
-                INSERT INTO wallet_ids (id, polo_id, wallet_id, name, description, is_active, created_at) 
-                VALUES (:id, :polo_id, :wallet_id, :name, :description, :is_active, NOW())
-                ON DUPLICATE KEY UPDATE 
-                    name = VALUES(name),
-                    description = VALUES(description),
-                    is_active = VALUES(is_active),
-                    updated_at = NOW()
+                INSERT INTO wallet_ids (id, polo_id, wallet_id, name, description, is_active, created_at, updated_at) 
+                VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
             ");
             
             $params = [
-                'id' => $walletData['id'],
-                'polo_id' => $walletData['polo_id'], // Pode ser NULL para master
-                'wallet_id' => $walletData['wallet_id'],
-                'name' => $walletData['name'],
-                'description' => $walletData['description'] ?? null,
-                'is_active' => $walletData['is_active'] ?? 1
+                $walletData['id'],
+                $walletData['polo_id'],
+                $walletData['wallet_id'],
+                $walletData['name'],
+                $walletData['description'] ?? null,
+                $walletData['is_active'] ?? 1
             ];
             
-            // Log dos parâmetros para debug
-            error_log("DatabaseManager::saveWalletId - Parâmetros SQL: " . json_encode($params));
+            error_log("Executando INSERT: " . json_encode($params));
             
             $result = $stmt->execute($params);
             
             if ($result) {
-                error_log("DatabaseManager::saveWalletId - Sucesso! Wallet ID '{$walletData['wallet_id']}' salvo com polo_id: " . ($walletData['polo_id'] ?? 'NULL'));
+                $insertedId = $this->pdo->lastInsertId();
+                error_log("✅ SUCCESS: Wallet ID inserido - DB ID: {$insertedId}");
+                error_log("=== FIM VERIFICAÇÃO WALLET ID ===");
+                return true;
             } else {
-                error_log("DatabaseManager::saveWalletId - Erro na execução SQL");
+                error_log("❌ ERRO: Falha na inserção");
+                return false;
             }
             
-            return $result;
-            
         } catch (PDOException $e) {
-            error_log("DatabaseManager::saveWalletId - Erro PDO: " . $e->getMessage());
-            error_log("DatabaseManager::saveWalletId - Dados que causaram erro: " . json_encode($walletData));
-            return false;
+            error_log("❌ ERRO PDO: " . $e->getMessage());
+            error_log("Query state: " . json_encode($e->errorInfo ?? []));
+            
+            if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
+                throw new Exception("Erro de chave duplicada no banco de dados");
+            }
+            
+            throw new Exception("Erro do banco: " . $e->getMessage());
+        } catch (Exception $e) {
+            error_log("❌ ERRO GERAL: " . $e->getMessage());
+            throw $e;
         }
     }
     

@@ -212,6 +212,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception('Você não tem permissão para gerenciar Wallet IDs');
                 }
                 
+                // Validações básicas
                 $name = trim($_POST['wallet']['name'] ?? '');
                 $walletId = trim($_POST['wallet']['wallet_id'] ?? '');
                 $description = trim($_POST['wallet']['description'] ?? '');
@@ -225,87 +226,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception('Formato inválido. Use formato UUID (ex: 22e49670-27e4-4579-a4c1-205c8a40497c)');
                 }
                 
-                // DETERMINAR POLO ID CORRIGIDO
+                // Determinar polo_id baseado no usuário
                 $poloId = null;
-                
                 if ($isMaster) {
-                    // Master pode escolher polo ou deixar global
+                    // Master pode especificar polo ou deixar global (NULL)
                     if (isset($_POST['polo_id']) && !empty($_POST['polo_id'])) {
                         $poloId = (int)$_POST['polo_id'];
                     }
-                    error_log("MASTER: Polo escolhido = " . ($poloId ?? 'NULL (Global)'));
+                    // Se não especificar, fica NULL (global)
                 } else {
                     // Usuários de polo SEMPRE usam seu polo
-                    $poloId = (int)$usuario['polo_id'];
-                    error_log("USUÁRIO POLO: Polo obrigatório = {$poloId}");
-                    
+                    $poloId = $usuario['polo_id'];
                     if (!$poloId) {
                         throw new Exception('Erro: Usuário sem polo definido');
                     }
                 }
                 
-                error_log("=== CREATE WALLET DEBUG ===");
-                error_log("Usuário: {$usuario['email']} (Tipo: {$usuario['tipo']})");
-                error_log("Polo do usuário: " . ($usuario['polo_id'] ?? 'NULL'));
-                error_log("Polo determinado: " . ($poloId ?? 'NULL'));
-                error_log("Nome: {$name}");
-                error_log("UUID: {$walletId}");
+                // Log detalhado para debug
+                error_log("CREATE WALLET - Usuário: {$usuario['email']}, Tipo: {$usuario['tipo']}, Polo determinado: " . ($poloId ?? 'NULL'));
+                error_log("CREATE WALLET - Nome: {$name}, UUID: {$walletId}");
                 
-                // VERIFICAÇÃO MANUAL ANTES DE TENTAR SALVAR
-                $db = DatabaseManager::getInstance();
-                
-                try {
-                    if ($poloId === null) {
-                        // Verificar registros globais
-                        $preCheckStmt = $db->getConnection()->prepare("
-                            SELECT id, name FROM wallet_ids 
-                            WHERE wallet_id = ? AND polo_id IS NULL
-                        ");
-                        $preCheckStmt->execute([$walletId]);
-                    } else {
-                        // Verificar registros do polo específico
-                        $preCheckStmt = $db->getConnection()->prepare("
-                            SELECT id, name FROM wallet_ids 
-                            WHERE wallet_id = ? AND polo_id = ?
-                        ");
-                        $preCheckStmt->execute([$walletId, $poloId]);
-                    }
-                    
-                    $preCheck = $preCheckStmt->fetch();
-                    
-                    error_log("PRE-CHECK resultado: " . json_encode($preCheck));
-                    
-                    if ($preCheck) {
-                        $contexto = $poloId ? "no polo {$poloId}" : "como registro global";
-                        throw new Exception("UUID já existe {$contexto}: {$preCheck['name']} (ID: {$preCheck['id']})");
-                    }
-                    
-                    // Mostrar onde o UUID existe (para informação)
-                    $infoStmt = $db->getConnection()->prepare("
-                        SELECT w.name, w.polo_id, p.nome as polo_nome
-                        FROM wallet_ids w
-                        LEFT JOIN polos p ON w.polo_id = p.id
-                        WHERE w.wallet_id = ?
-                    ");
-                    $infoStmt->execute([$walletId]);
-                    $existingPlaces = $infoStmt->fetchAll();
-                    
-                    if (!empty($existingPlaces)) {
-                        $lugares = [];
-                        foreach ($existingPlaces as $lugar) {
-                            $lugares[] = $lugar['name'] . ' (' . ($lugar['polo_nome'] ?? 'Global') . ')';
-                        }
-                        error_log("INFO: UUID existe em outros locais: " . implode(', ', $lugares));
-                    }
-                    
-                } catch (Exception $e) {
-                    error_log("ERRO na verificação manual: " . $e->getMessage());
-                    throw $e;
-                }
-                
-                // PREPARAR DADOS PARA SALVAR
+                // Gerar ID único para evitar conflitos
                 $uniqueId = 'wallet_' . time() . '_' . uniqid() . '_' . rand(1000, 9999);
                 
+                // Preparar dados
                 $walletData = [
                     'id' => $uniqueId,
                     'polo_id' => $poloId,
@@ -315,43 +259,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'is_active' => 1
                 ];
                 
-                error_log("DADOS FINAIS: " . json_encode($walletData));
+                error_log("CREATE WALLET - Dados finais: " . json_encode($walletData));
                 
-                // TENTAR SALVAR
                 try {
+                    $db = DatabaseManager::getInstance();
                     $success = $db->saveWalletId($walletData);
                     
                     if ($success) {
-                        $contextoMsg = $poloId ? " (Polo: {$usuario['polo_nome']})" : " (Global)";
-                        
-                        $infoExtra = '';
-                        if (!empty($existingPlaces)) {
-                            $outros = [];
-                            foreach ($existingPlaces as $lugar) {
-                                $outros[] = $lugar['polo_nome'] ?? 'Global';
-                            }
-                            //$infoExtra = "<br><small class='text-info'>💡 Este UUID também é usado em: " . implode(', ', array_unique($outros)) . "</small>";
-                        }
-                        
-                        setMessage('success', "Wallet ID '{$name}' cadastrado com sucesso!{$contextoMsg}{$infoExtra}", [
+                        $contexto = $poloId ? " (Polo: {$usuario['polo_nome']})" : " (Global)";
+                        setMessage('success', "Wallet ID '{$name}' cadastrado com sucesso!{$contexto}", [
                             'wallet_id' => $walletId,
                             'polo_id' => $poloId,
                             'name' => $name,
-                            'outros_polos' => count($existingPlaces),
                             'unique_id' => $uniqueId
                         ]);
                         
-                        error_log("✅ SUCESSO TOTAL");
+                        error_log("CREATE WALLET - SUCESSO TOTAL");
                     } else {
-                        throw new Exception("Falha inexplicada ao salvar no banco");
+                        throw new Exception("Falha inexplicada ao salvar");
                     }
                     
                 } catch (Exception $e) {
-                    error_log("❌ ERRO FINAL: " . $e->getMessage());
-                    throw new Exception("Erro ao salvar: " . $e->getMessage());
+                    error_log("CREATE WALLET - ERRO: " . $e->getMessage());
+                    throw $e;
                 }
-                
-                error_log("=== FIM CREATE WALLET DEBUG ===");
                 break;
                 
             case 'toggle_wallet_status':
@@ -793,94 +724,28 @@ try {
     // CLIENTES RECENTES - CORRIGIDO
     // ==================================================
     
-    $customers = []; // Resetar array completamente
+    $customerQuery = "SELECT * FROM customers ORDER BY created_at DESC LIMIT 10";
+    $customerParams = [];
     
-    try {
-        error_log("=== INÍCIO CARREGAMENTO CLIENTES ===");
+    // Aplicar filtro de polo se necessário
+    if (!$isMaster && $usuario['polo_id']) {
+        $customerQuery = "SELECT * FROM customers WHERE polo_id = ? ORDER BY created_at DESC LIMIT 10";
+        $customerParams = [$usuario['polo_id']];
+    }
+    
+    $stmt = $db->getConnection()->prepare($customerQuery);
+    $stmt->execute($customerParams);
+    $customers = $stmt->fetchAll();
+    
+    // Adicionar informações extras aos clientes
+    foreach ($customers as &$customer) {
+        $customer['formatted_date'] = date('d/m/Y H:i', strtotime($customer['created_at']));
+        $customer['masked_cpf'] = maskDocument($customer['cpf_cnpj'] ?? '');
         
-        // Query mais simples e direta - SEM JOINs desnecessários
-        $customerBaseQuery = "SELECT * FROM customers WHERE 1=1";
-        $customerBaseParams = [];
-        
-        // Aplicar filtro de polo se necessário
-        if (!$isMaster && $usuario['polo_id']) {
-            $customerBaseQuery .= " AND polo_id = ?";
-            $customerBaseParams[] = $usuario['polo_id'];
-            error_log("FILTRO POLO CLIENTES: {$usuario['polo_id']}");
-        } else {
-            error_log("SEM FILTRO POLO CLIENTES (Master)");
-        }
-        
-        // Ordenar por data de criação (mais recentes primeiro)
-        $customerBaseQuery .= " ORDER BY created_at DESC LIMIT 15";
-        
-        error_log("QUERY CLIENTES: " . $customerBaseQuery);
-        error_log("PARAMS CLIENTES: " . json_encode($customerBaseParams));
-        
-        // Executar query
-        $customerStmt = $db->getConnection()->prepare($customerBaseQuery);
-        $customerStmt->execute($customerBaseParams);
-        $customerRawData = $customerStmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        error_log("CLIENTES RETORNADOS: " . count($customerRawData));
-        
-        // Processar cada cliente individualmente
-        foreach ($customerRawData as $customerRaw) {
-            error_log("PROCESSANDO CLIENTE: ID={$customerRaw['id']}, Nome={$customerRaw['name']}, Email={$customerRaw['email']}");
-            
-            // Buscar contagem de pagamentos individualmente
-            $paymentCountStmt = $db->getConnection()->prepare("
-                SELECT COUNT(*) as payment_count,
-                       COALESCE(SUM(CASE WHEN status = 'RECEIVED' THEN value ELSE 0 END), 0) as total_paid
-                FROM payments 
-                WHERE customer_id = ?
-            ");
-            $paymentCountStmt->execute([$customerRaw['id']]);
-            $paymentStats = $paymentCountStmt->fetch(PDO::FETCH_ASSOC);
-            
-            // Criar objeto cliente processado
-            $processedCustomer = [
-                'id' => $customerRaw['id'],
-                'polo_id' => $customerRaw['polo_id'],
-                'name' => $customerRaw['name'],
-                'email' => $customerRaw['email'],
-                'cpf_cnpj' => $customerRaw['cpf_cnpj'],
-                'mobile_phone' => $customerRaw['mobile_phone'],
-                'address' => $customerRaw['address'],
-                'created_at' => $customerRaw['created_at'],
-                'updated_at' => $customerRaw['updated_at'],
-                
-                // Estatísticas
-                'payment_count' => $paymentStats['payment_count'] ?? 0,
-                'total_paid' => $paymentStats['total_paid'] ?? 0,
-                
-                // Campos formatados
-                'formatted_date' => date('d/m/Y H:i', strtotime($customerRaw['created_at'])),
-                'masked_cpf' => maskDocument($customerRaw['cpf_cnpj'] ?? ''),
-                'formatted_total' => 'R$ ' . number_format($paymentStats['total_paid'] ?? 0, 2, ',', '.'),
-                'has_payments' => ($paymentStats['payment_count'] ?? 0) > 0,
-                
-                // Chave única para debug
-                'debug_key' => 'customer_' . $customerRaw['id'] . '_' . substr(md5($customerRaw['email']), 0, 8)
-            ];
-            
-            $customers[] = $processedCustomer;
-            
-            error_log("CLIENTE PROCESSADO: {$processedCustomer['debug_key']} - {$processedCustomer['name']}");
-        }
-        
-        error_log("TOTAL CLIENTES PROCESSADOS: " . count($customers));
-        
-        // Debug final: mostrar array completo
-        foreach ($customers as $idx => $customer) {
-            error_log("CLIENTE FINAL[$idx]: ID={$customer['id']}, Nome='{$customer['name']}', Email={$customer['email']}");
-        }
-        
-        error_log("=== FIM CARREGAMENTO CLIENTES ===");
-        
-    } catch (Exception $e) {
-        error_log("ERRO AO CARREGAR CLIENTES: " . $e->getMessage());
-        $customers = [];
+        // Contar pagamentos do cliente
+        $stmt = $db->getConnection()->prepare("SELECT COUNT(*) as count FROM payments WHERE customer_id = ?");
+        $stmt->execute([$customer['id']]);
+        $customer['payment_count'] = $stmt->fetch()['count'] ?? 0;
     }
     
     // ==================================================
@@ -2068,12 +1933,12 @@ if (!$isMaster && $usuario['polo_id']) {
                                                         <div class="wallet-id-display mb-2">
                                                             <?php echo maskWalletId($wallet['wallet_id']); ?>
                                                         </div>
-<!--                                                         <div class="d-flex justify-content-between">
+                                                        <div class="d-flex justify-content-between">
                                                             <strong class="text-success"><?php echo $wallet['formatted_total']; ?></strong>
                                                             <small class="text-muted">
                                                                 Média: <?php echo $wallet['formatted_avg']; ?>
                                                             </small>
-                                                        </div> -->
+                                                        </div>
                                                     </div>
                                                 </div>
                                             </div>
@@ -2137,118 +2002,65 @@ if (!$isMaster && $usuario['polo_id']) {
                             </div>
                             
                             <div class="col-md-6">
-    <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5><i class="bi bi-list me-2"></i>Clientes Recentes</h5>
-            <span class="badge bg-primary"><?php echo count($customers); ?></span>
-        </div>
-        <div class="card-body">
-            <?php if (!empty($customers)): ?>
-                <div class="table-responsive">
-                    <table class="table table-hover">
-                        <thead>
-                            <tr>
-                                <th>Cliente</th>
-                                <th>Contato</th>
-                                <th>Criado</th>
-                                <th>Ações</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php 
-                            // DEBUG: Log antes do loop de exibição
-                            error_log("=== INICIANDO LOOP EXIBIÇÃO CLIENTES ===");
-                            error_log("Total para exibir: " . count($customers));
-                            
-                            // Usar índice numérico para evitar problemas
-                            $displayCount = 0;
-                            for ($i = 0; $i < count($customers) && $i < 10; $i++) {
-                                $customer = $customers[$i];
-                                $displayCount++;
-                                
-                                error_log("EXIBINDO CLIENTE[$i]: ID={$customer['id']}, Nome='{$customer['name']}', Debug={$customer['debug_key']}");
-                            ?>
-                            <tr data-customer-index="<?php echo $i; ?>"
-                                data-customer-id="<?php echo $customer['id']; ?>"
-                                data-debug-key="<?php echo $customer['debug_key']; ?>">
-                                <td>
-                                    <strong><?php echo htmlspecialchars($customer['name']); ?></strong>
-                                    <!-- DEBUG INFO -->
-                                    <br><small class="text-danger">
-                                        ID: <?php echo $customer['id']; ?> | Debug: <?php echo $customer['debug_key']; ?>
-                                    </small>
-                                    <br><small class="text-muted">
-                                        Doc: <?php echo $customer['masked_cpf']; ?>
-                                    </small>
-                                </td>
-                                <td>
-                                    <small>
-                                        <?php echo htmlspecialchars($customer['email']); ?><br>
-                                        <?php if (!empty($customer['mobile_phone'])): ?>
-                                            📞 <?php echo htmlspecialchars($customer['mobile_phone']); ?><br>
-                                        <?php endif; ?>
-                                        <?php if ($customer['has_payments']): ?>
-                                            💰 <?php echo $customer['payment_count']; ?> pagamento(s)<br>
-                                            <?php echo $customer['formatted_total']; ?>
-                                        <?php else: ?>
-                                            <span class="text-muted">Sem pagamentos</span>
-                                        <?php endif; ?>
-                                    </small>
-                                </td>
-                                <td>
-                                    <small class="text-muted">
-                                        <?php echo $customer['formatted_date']; ?>
-                                    </small>
-                                </td>
-                                <td>
-                                    <div class="btn-group" role="group">
-                                        <button class="btn btn-sm btn-outline-primary" 
-                                                onclick="viewCustomer('<?php echo $customer['id']; ?>')" 
-                                                data-bs-toggle="tooltip" title="Ver detalhes">
-                                            <i class="bi bi-eye"></i>
-                                        </button>
-                                        <button class="btn btn-sm btn-outline-success" 
-                                                onclick="createPaymentForCustomer('<?php echo $customer['id']; ?>')" 
-                                                data-bs-toggle="tooltip" title="Novo pagamento">
-                                            <i class="bi bi-credit-card"></i>
-                                        </button>
+                                <div class="card">
+                                    <div class="card-header d-flex justify-content-between align-items-center">
+                                        <h5><i class="bi bi-list me-2"></i>Clientes Recentes</h5>
+                                        <span class="badge bg-primary"><?php echo count($customers); ?></span>
                                     </div>
-                                </td>
-                            </tr>
-                            <?php 
-                            } // fim do for loop
-                            
-                            error_log("=== FIM LOOP EXIBIÇÃO CLIENTES ===");
-                            error_log("Clientes exibidos: {$displayCount}");
-                            ?>
-                        </tbody>
-                    </table>
-                </div>
-                
-                <!-- DEBUG: Resumo -->
-                <div class="alert alert-info">
-                    <strong>🔍 Debug Clientes:</strong><br>
-                    Total no array: <?php echo count($customers); ?><br>
-                    Exibidos: <?php echo $displayCount; ?><br>
-                    Polo contexto: <?php echo $usuario['polo_nome'] ?: 'Master'; ?>
-                </div>
-                
-            <?php else: ?>
-                <div class="empty-state">
-                    <i class="bi bi-people"></i>
-                    <p>Nenhum cliente cadastrado</p>
-                    <small class="text-muted">Cadastre seu primeiro cliente para começar</small>
-                </div>
-            <?php endif; ?>
-        </div>
-    </div>
-</div>
+                                    <div class="card-body">
+                                        <?php if (!empty($customers)): ?>
+                                            <div class="table-responsive">
+                                                <table class="table table-hover">
+                                                    <thead>
+                                                        <tr>
+                                                            <th>Cliente</th>
+                                                            <th>Contato</th>
+                                                            <th>Criado</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        <?php foreach (array_slice($customers, 0, 8) as $customer): ?>
+                                                        <tr>
+                                                            <td>
+                                                                <strong><?php echo htmlspecialchars($customer['name']); ?></strong><br>
+                                                                <small class="text-muted">
+                                                                    Doc: <?php echo $customer['masked_cpf']; ?>
+                                                                </small>
+                                                            </td>
+                                                            <td>
+                                                                <small>
+                                                                    <?php echo htmlspecialchars($customer['email']); ?><br>
+                                                                    <?php echo $customer['payment_count']; ?> pagamento(s)
+                                                                </small>
+                                                            </td>
+                                                            <td>
+                                                                <small class="text-muted">
+                                                                    <?php echo $customer['formatted_date']; ?>
+                                                                </small>
+                                                            </td>
+                                                        </tr>
+                                                        <?php endforeach; ?>
+                                                    </tbody>
+                                                </table>
+                                            </div>
+                                        <?php else: ?>
+                                            <div class="empty-state">
+                                                <i class="bi bi-people"></i>
+                                                <p>Nenhum cliente cadastrado</p>
+                                                <small class="text-muted">Cadastre seu primeiro cliente para começar</small>
+                                            </div>
+                                        <?php endif; ?>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                   
-                    <!-- ===== SEÇÃO WALLET IDs ===== -->
-                    <?php if ($permissions['can_manage_wallets']): ?>
+                    <!-- O restante das seções seria similar, seguindo o mesmo padrão -->
+                    <!-- Wallet IDs, Pagamentos, Relatórios, etc... -->
+                    
+                                    <!-- ===== SEÇÃO WALLET IDs ===== -->
+                                    <?php if ($permissions['can_manage_wallets']): ?>
                     <div id="wallets-section" class="section">
                         <div class="row">
                             <div class="col-md-4">
@@ -2371,14 +2183,14 @@ if (!$isMaster && $usuario['polo_id']) {
                     <span class="badge bg-<?php echo $wallet['status_badge']; ?>">
                         <?php echo $wallet['status_text']; ?>
                     </span>
-<!--                     <div class="text-end">
+                    <div class="text-end">
                         <?php if ($wallet['has_activity']): ?>
                         <div class="text-success fw-bold"><?php echo $wallet['formatted_earned']; ?></div>
                         <small class="text-muted"><?php echo $wallet['usage_count']; ?> uso(s)</small>
                         <?php else: ?>
                         <small class="text-muted">Sem atividade</small>
                         <?php endif; ?>
-                    </div> -->
+                    </div>
                 </div>
                 
                 <!-- DEBUG: Mostrar info única -->
