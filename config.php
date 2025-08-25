@@ -56,36 +56,49 @@ class DatabaseManager {
         return $this->pdo;
     }
     
-    /**
-     * Salvar Wallet ID com suporte a polo
+/**
+     * Salvar Wallet ID com suporte a polo - MÉTODO CORRIGIDO
      */
     public function saveWalletId($walletData) {
         try {
-            // Se não especificar polo_id, usar o polo do usuário logado
-            if (!isset($walletData['polo_id']) && isset($_SESSION['polo_id'])) {
-                $walletData['polo_id'] = $_SESSION['polo_id'];
-            }
+            // Log para debug
+            error_log("DatabaseManager::saveWalletId - Dados recebidos: " . json_encode($walletData));
             
             $stmt = $this->pdo->prepare("
-                INSERT INTO wallet_ids (id, polo_id, wallet_id, name, description, is_active) 
-                VALUES (:id, :polo_id, :wallet_id, :name, :description, :is_active)
+                INSERT INTO wallet_ids (id, polo_id, wallet_id, name, description, is_active, created_at) 
+                VALUES (:id, :polo_id, :wallet_id, :name, :description, :is_active, NOW())
                 ON DUPLICATE KEY UPDATE 
                     name = VALUES(name),
                     description = VALUES(description),
                     is_active = VALUES(is_active),
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = NOW()
             ");
             
-            return $stmt->execute([
+            $params = [
                 'id' => $walletData['id'],
-                'polo_id' => $walletData['polo_id'],
+                'polo_id' => $walletData['polo_id'], // Pode ser NULL para master
                 'wallet_id' => $walletData['wallet_id'],
                 'name' => $walletData['name'],
                 'description' => $walletData['description'] ?? null,
                 'is_active' => $walletData['is_active'] ?? 1
-            ]);
+            ];
+            
+            // Log dos parâmetros para debug
+            error_log("DatabaseManager::saveWalletId - Parâmetros SQL: " . json_encode($params));
+            
+            $result = $stmt->execute($params);
+            
+            if ($result) {
+                error_log("DatabaseManager::saveWalletId - Sucesso! Wallet ID '{$walletData['wallet_id']}' salvo com polo_id: " . ($walletData['polo_id'] ?? 'NULL'));
+            } else {
+                error_log("DatabaseManager::saveWalletId - Erro na execução SQL");
+            }
+            
+            return $result;
+            
         } catch (PDOException $e) {
-            error_log("Erro ao salvar Wallet ID: " . $e->getMessage());
+            error_log("DatabaseManager::saveWalletId - Erro PDO: " . $e->getMessage());
+            error_log("DatabaseManager::saveWalletId - Dados que causaram erro: " . json_encode($walletData));
             return false;
         }
     }

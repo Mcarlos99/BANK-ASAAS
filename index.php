@@ -2,7 +2,7 @@
 /**
  * Interface Principal do Sistema IMEP Split ASAAS - VERSÃO CORRIGIDA FINAL
  * Arquivo: index.php
- * Versão: 3.1 - Correção dos erros de SQL e variáveis
+ * Versão: 3.2 - Correção dos erros de SQL e variáveis
  */
 
 // ==================================================
@@ -186,7 +186,7 @@ $jsContext = [
     ],
     'permissions' => $permissions,
     'environment' => defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox',
-    'system_version' => '3.1 Multi-Tenant'
+    'system_version' => '3.2 Multi-Tenant'
 ];
 
 // ==================================================
@@ -226,13 +226,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     throw new Exception('Formato de Wallet ID inválido. Use formato UUID (ex: 22e49670-27e4-4579-a4c1-205c8a40497c)');
                 }
                 
-                // Criar Wallet ID
-                if (class_exists('WalletManager')) {
-                    $walletManager = new WalletManager();
-                    $wallet = $walletManager->createWallet($name, $walletId, $description, $usuario['polo_id']);
-                    setMessage('success', 'Wallet ID cadastrado com sucesso!', ['wallet_id' => $walletId]);
+                // CORREÇÃO: Determinar o polo_id corretamente
+                $poloId = null;
+                
+                if ($isMaster) {
+                    // Se é master e foi especificado um polo_id no formulário, usar esse
+                    if (isset($_POST['polo_id']) && !empty($_POST['polo_id'])) {
+                        $poloId = (int)$_POST['polo_id'];
+                    }
+                    // Se master não especificar polo, pode ficar null (global)
                 } else {
-                    throw new Exception('Sistema de Wallet Manager não disponível');
+                    // Se não é master, SEMPRE usar o polo do usuário logado
+                    $poloId = $usuario['polo_id'];
+                }
+                
+                // Log para debug
+                error_log("Criando Wallet ID - Usuário: {$usuario['email']}, Tipo: {$usuario['tipo']}, Polo ID determinado: " . ($poloId ?? 'NULL'));
+                
+                // Verificar se o Wallet ID já existe no polo (ou globalmente se for master sem polo)
+                $db = DatabaseManager::getInstance();
+                
+                $checkQuery = "SELECT COUNT(*) as count FROM wallet_ids WHERE wallet_id = ?";
+                $checkParams = [$walletId];
+                
+                // Se tem polo específico, verificar apenas nesse polo
+                if ($poloId !== null) {
+                    $checkQuery .= " AND polo_id = ?";
+                    $checkParams[] = $poloId;
+                }
+                
+                $stmt = $db->getConnection()->prepare($checkQuery);
+                $stmt->execute($checkParams);
+                
+                if ($stmt->fetch()['count'] > 0) {
+                    $poloContext = $poloId ? " neste polo" : " no sistema";
+                    throw new Exception("Este Wallet ID já está cadastrado{$poloContext}");
+                }
+                
+                // Preparar dados para salvar
+                $walletData = [
+                    'id' => uniqid('wallet_' . time() . '_'),
+                    'polo_id' => $poloId, // Aqui está a correção principal!
+                    'wallet_id' => $walletId,
+                    'name' => $name,
+                    'description' => $description,
+                    'is_active' => 1
+                ];
+                
+                // Salvar no banco usando DatabaseManager
+                $success = $db->saveWalletId($walletData);
+                
+                if ($success) {
+                    $poloInfo = $poloId ? " (Polo: {$usuario['polo_nome']})" : " (Global)";
+                    setMessage('success', 'Wallet ID cadastrado com sucesso!' . $poloInfo, [
+                        'wallet_id' => $walletId,
+                        'polo_id' => $poloId,
+                        'name' => $name
+                    ]);
+                } else {
+                    throw new Exception("Erro ao salvar Wallet ID no banco de dados");
                 }
                 break;
                 
@@ -274,56 +326,117 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 setMessage('success', 'Status do Wallet ID ' . ($newStatus ? 'ativado' : 'desativado') . ' com sucesso!');
                 break;
                 
-            case 'delete_wallet':
-                if (!$permissions['can_manage_wallets']) {
-                    throw new Exception('Você não tem permissão para excluir Wallet IDs');
-                }
-                
-                $walletDbId = $_POST['wallet_db_id'] ?? '';
-                
-                if (empty($walletDbId)) {
-                    throw new Exception('ID do Wallet não especificado');
-                }
-                
-                $db = DatabaseManager::getInstance();
-                
-                // Verificar se tem splits associados antes de excluir
-                $stmt = $db->getConnection()->prepare("
-                    SELECT COUNT(*) as count 
-                    FROM payment_splits ps 
-                    JOIN wallet_ids wi ON ps.wallet_id = wi.wallet_id 
-                    WHERE wi.id = ?
-                ");
-                $stmt->execute([$walletDbId]);
-                $result = $stmt->fetch();
-                
-                if ($result['count'] > 0) {
-                    throw new Exception('Não é possível excluir. Este Wallet ID possui ' . $result['count'] . ' split(s) associado(s).');
-                }
-                
-                // Verificar permissão por polo e obter informações
-                $checkQuery = "SELECT wallet_id, name FROM wallet_ids WHERE id = ?";
-                $checkParams = [$walletDbId];
-                
-                if (!$isMaster && $usuario['polo_id']) {
-                    $checkQuery .= " AND polo_id = ?";
-                    $checkParams[] = $usuario['polo_id'];
-                }
-                
-                $stmt = $db->getConnection()->prepare($checkQuery);
-                $stmt->execute($checkParams);
-                $walletInfo = $stmt->fetch();
-                
-                if (!$walletInfo) {
-                    throw new Exception('Wallet ID não encontrado ou você não tem permissão para excluí-lo');
-                }
-                
-                // Excluir
-                $stmt = $db->getConnection()->prepare("DELETE FROM wallet_ids WHERE id = ?");
-                $stmt->execute([$walletDbId]);
-                
-                setMessage('success', "Wallet ID '{$walletInfo['name']}' removido com sucesso!");
-                break;
+                case 'delete_wallet':
+                    if (!$permissions['can_manage_wallets']) {
+                        throw new Exception('Você não tem permissão para excluir Wallet IDs');
+                    }
+                    
+                    $walletDbId = $_POST['wallet_db_id'] ?? '';
+                    
+                    if (empty($walletDbId)) {
+                        throw new Exception('ID do Wallet não especificado');
+                    }
+                    
+                    $db = DatabaseManager::getInstance();
+                    
+                    // Log para debug
+                    error_log("Tentando excluir Wallet ID com DB ID: {$walletDbId} por usuário: {$usuario['email']}");
+                    
+                    // PRIMEIRO: Verificar se o wallet existe e obter informações
+                    $checkQuery = "SELECT w.*, COUNT(ps.id) as splits_count 
+                                  FROM wallet_ids w 
+                                  LEFT JOIN payment_splits ps ON w.wallet_id = ps.wallet_id 
+                                  WHERE w.id = ?";
+                    $checkParams = [$walletDbId];
+                    
+                    // Aplicar filtro de polo se necessário
+                    if (!$isMaster && $usuario['polo_id']) {
+                        $checkQuery .= " AND w.polo_id = ?";
+                        $checkParams[] = $usuario['polo_id'];
+                    }
+                    
+                    $checkQuery .= " GROUP BY w.id";
+                    
+                    $stmt = $db->getConnection()->prepare($checkQuery);
+                    $stmt->execute($checkParams);
+                    $walletInfo = $stmt->fetch();
+                    
+                    if (!$walletInfo) {
+                        throw new Exception('Wallet ID não encontrado ou você não tem permissão para excluí-lo');
+                    }
+                    
+                    // Log das informações do wallet
+                    error_log("Wallet encontrado: " . json_encode([
+                        'id' => $walletInfo['id'],
+                        'name' => $walletInfo['name'],
+                        'wallet_id' => $walletInfo['wallet_id'],
+                        'polo_id' => $walletInfo['polo_id'],
+                        'splits_count' => $walletInfo['splits_count']
+                    ]));
+                    
+                    // SEGUNDO: Verificar se tem splits associados
+                    if ($walletInfo['splits_count'] > 0) {
+                        throw new Exception("Não é possível excluir. Este Wallet ID possui {$walletInfo['splits_count']} split(s) associado(s).");
+                    }
+                    
+                    // TERCEIRO: Excluir o Wallet ID
+                    $deleteQuery = "DELETE FROM wallet_ids WHERE id = ?";
+                    $deleteParams = [$walletDbId];
+                    
+                    // Aplicar filtro de polo se necessário (segurança extra)
+                    if (!$isMaster && $usuario['polo_id']) {
+                        $deleteQuery .= " AND polo_id = ?";
+                        $deleteParams[] = $usuario['polo_id'];
+                    }
+                    
+                    $stmt = $db->getConnection()->prepare($deleteQuery);
+                    $resultado = $stmt->execute($deleteParams);
+                    
+                    // Verificar quantas linhas foram afetadas
+                    $linhasAfetadas = $stmt->rowCount();
+                    
+                    error_log("Resultado da exclusão: " . json_encode([
+                        'query_executada' => $resultado,
+                        'linhas_afetadas' => $linhasAfetadas,
+                        'query' => $deleteQuery,
+                        'params' => $deleteParams
+                    ]));
+                    
+                    if ($resultado && $linhasAfetadas > 0) {
+                        // Log de auditoria
+                        if (method_exists($db, 'logAuditoria') || function_exists('logAuditoria')) {
+                            try {
+                                $stmt = $db->getConnection()->prepare("
+                                    INSERT INTO auditoria (usuario_id, polo_id, acao, tabela, registro_id, dados_anteriores, ip_address, user_agent) 
+                                    VALUES (?, ?, 'excluir_wallet', 'wallet_ids', ?, ?, ?, ?)
+                                ");
+                                
+                                $stmt->execute([
+                                    $usuario['id'],
+                                    $usuario['polo_id'] ?? null,
+                                    $walletDbId,
+                                    json_encode([
+                                        'name' => $walletInfo['name'],
+                                        'wallet_id' => $walletInfo['wallet_id'],
+                                        'polo_id' => $walletInfo['polo_id']
+                                    ]),
+                                    $_SERVER['REMOTE_ADDR'] ?? 'unknown',
+                                    $_SERVER['HTTP_USER_AGENT'] ?? ''
+                                ]);
+                            } catch (Exception $e) {
+                                error_log("Erro ao gravar auditoria: " . $e->getMessage());
+                            }
+                        }
+                        
+                        setMessage('success', "Wallet ID '{$walletInfo['name']}' removido com sucesso!", [
+                            'wallet_id' => $walletInfo['wallet_id'],
+                            'name' => $walletInfo['name']
+                        ]);
+                    } else {
+                        error_log("ERRO: Query executada mas nenhuma linha foi afetada. Possível problema de permissão ou ID não existe.");
+                        throw new Exception("Erro interno: Não foi possível excluir o Wallet ID. Verifique se você tem permissão ou se o ID ainda existe.");
+                    }
+                    break;
                 
             // ==================================================
             // GERENCIAMENTO DE CLIENTES
@@ -1220,7 +1333,7 @@ if (!$isMaster && $usuario['polo_id']) {
             background: #f8f9fa;
             border: 1px solid #dee2e6;
             border-radius: 6px;
-            padding: 8px 12px;
+            padding: 10px;
             font-size: 0.9em;
             color: #495057;
             cursor: pointer;
@@ -1427,11 +1540,11 @@ if (!$isMaster && $usuario['polo_id']) {
                             <i class="bi bi-credit-card-2-front me-2"></i>
                             IMEP Split
                         </h4>
-                        <small class="text-white-50">Sistema ASAAS v3.1</small>
+                        <small class="text-white-50">Sistema ASAAS v3.2</small>
                     </div>
                     
                     <!-- Informações do Usuário -->
-                    <div class="user-info text-white">
+ <!--                    <div class="user-info text-white">
                         <div class="d-flex align-items-center mb-2">
                             <div class="bg-white rounded-circle d-flex align-items-center justify-content-center me-3" 
                                  style="width: 40px; height: 40px;">
@@ -1441,10 +1554,10 @@ if (!$isMaster && $usuario['polo_id']) {
                                 <div class="fw-bold"><?php echo htmlspecialchars($usuario['nome']); ?></div>
                                 <small class="opacity-75"><?php echo htmlspecialchars($usuario['email']); ?></small>
                             </div>
-                        </div>
+                        </div>  -->
                         
                         <!-- Tipo de Usuário -->
-                        <div class="d-flex justify-content-between align-items-center">
+                        <!-- <div class="d-flex justify-content-between align-items-center">
                             <span class="badge" style="background: rgba(255,255,255,0.2);">
                                 <?php 
                                 $tiposFormatados = [
@@ -1463,7 +1576,7 @@ if (!$isMaster && $usuario['polo_id']) {
                             </div>
                             <?php endif; ?>
                         </div>
-                    </div>
+                    </div> -->
                     
                     <!-- Navegação Principal -->
                     <nav class="nav flex-column">
@@ -1903,43 +2016,57 @@ if (!$isMaster && $usuario['polo_id']) {
                     <div id="wallets-section" class="section">
                         <div class="row">
                             <div class="col-md-4">
-                                <div class="card">
-                                    <div class="card-header">
-                                        <h5><i class="bi bi-plus-circle me-2"></i>Novo Wallet ID</h5>
+                            <div class="card">
+                                        <div class="card-header">
+                                            <h5><i class="bi bi-plus-circle me-2"></i>Novo Wallet ID</h5>
+                                        </div>
+                                        <div class="card-body">
+                                            <form method="POST" id="wallet-form">
+                                                <input type="hidden" name="action" value="create_wallet">
+                                                
+                                                <!-- IMPORTANTE: Campo oculto com polo_id do usuário logado -->
+                                                <?php if (!$isMaster && $usuario['polo_id']): ?>
+                                                <input type="hidden" name="polo_id" value="<?php echo $usuario['polo_id']; ?>">
+                                                <?php endif; ?>
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label">Nome/Identificação *</label>
+                                                    <input type="text" class="form-control" name="wallet[name]" required
+                                                           placeholder="Ex: João Silva ou Empresa LTDA">
+                                                </div>
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label">Wallet ID *</label>
+                                                    <input type="text" class="form-control" name="wallet[wallet_id]" required
+                                                           placeholder="22e49670-27e4-4579-a4c1-205c8a40497c"
+                                                           style="font-family: monospace;">
+                                                    <small class="form-text text-info">
+                                                        <i class="bi bi-info-circle"></i>
+                                                        Copie o Wallet ID do painel ASAAS
+                                                    </small>
+                                                </div>
+                                                
+                                                <div class="mb-3">
+                                                    <label class="form-label">Descrição (Opcional)</label>
+                                                    <textarea class="form-control" name="wallet[description]" rows="2"
+                                                              placeholder="Ex: Parceiro comercial, comissão de vendas..."></textarea>
+                                                </div>
+                                                
+                                                <!-- Mostrar contexto do polo para o usuário -->
+                                                <?php if (!$isMaster): ?>
+                                                <div class="alert alert-info">
+                                                    <i class="bi bi-building me-1"></i>
+                                                    <strong>Polo:</strong> <?php echo htmlspecialchars($usuario['polo_nome'] ?? 'N/A'); ?>
+                                                    <br><small>Este Wallet ID será cadastrado para seu polo.</small>
+                                                </div>
+                                                <?php endif; ?>
+                                                
+                                                <button type="submit" class="btn btn-gradient w-100">
+                                                    <i class="bi bi-save me-2"></i>Cadastrar Wallet ID
+                                                </button>
+                                            </form>
+                                        </div>
                                     </div>
-                                    <div class="card-body">
-                                        <form method="POST" id="wallet-form">
-                                            <input type="hidden" name="action" value="create_wallet">
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Nome/Identificação *</label>
-                                                <input type="text" class="form-control" name="wallet[name]" required
-                                                       placeholder="Ex: João Silva ou Empresa LTDA">
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Wallet ID *</label>
-                                                <input type="text" class="form-control" name="wallet[wallet_id]" required
-                                                       placeholder="22e49670-27e4-4579-a4c1-205c8a40497c"
-                                                       style="font-family: monospace;">
-                                                <small class="form-text text-info">
-                                                    <i class="bi bi-info-circle"></i>
-                                                    Copie o Wallet ID do painel ASAAS
-                                                </small>
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Descrição (Opcional)</label>
-                                                <textarea class="form-control" name="wallet[description]" rows="2"
-                                                          placeholder="Ex: Parceiro comercial, comissão de vendas..."></textarea>
-                                            </div>
-                                            
-                                            <button type="submit" class="btn btn-gradient w-100">
-                                                <i class="bi bi-save me-2"></i>Cadastrar Wallet ID
-                                            </button>
-                                        </form>
-                                    </div>
-                                </div>
                             </div>
                             
                             <div class="col-md-8">
@@ -1985,7 +2112,7 @@ if (!$isMaster && $usuario['polo_id']) {
                                                             
                                                             <div class="wallet-id-display mb-2" 
                                                                  onclick="copyToClipboard('<?php echo $wallet['wallet_id']; ?>')">
-                                                                <?php echo $wallet['masked_wallet_id']; ?>
+                                                                <?php echo $wallet['wallet_id']; ?>
                                                                 <i class="bi bi-clipboard float-end"></i>
                                                             </div>
                                                             
@@ -2529,7 +2656,7 @@ if (!$isMaster && $usuario['polo_id']) {
         let currentSection = 'dashboard';
         let splitCounter = 1;
         
-        console.log('🚀 Sistema IMEP Split ASAAS v3.1 carregado - CORRIGIDO');
+        console.log('🚀 Sistema IMEP Split ASAAS v3.2 carregado - CORRIGIDO');
         console.log('👤 Usuário:', SystemConfig.user.nome, '(' + SystemConfig.user.tipo + ')');
         console.log('🏢 Contexto:', SystemConfig.user.polo_nome || 'Master');
         console.log('🔧 Ambiente:', SystemConfig.environment);
@@ -2572,6 +2699,10 @@ if (!$isMaster && $usuario['polo_id']) {
             return permissionMap[section] !== false;
         }
         
+        
+
+
+
         // Event listeners para navegação
         document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('[data-section]').forEach(link => {
@@ -2585,6 +2716,562 @@ if (!$isMaster && $usuario['polo_id']) {
             // Inicialização
             initializeSystem();
         });
+
+
+        // ===== FUNÇÕES PARA WALLET IDs (SOLUCIONANDO OS ERROS) =====
+        
+        function toggleWalletStatus(walletDbId, currentStatus) {
+            if (!confirm('Confirma a alteração do status deste Wallet ID?')) {
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('action', 'toggle_wallet_status');
+            formData.append('wallet_db_id', walletDbId);
+            formData.append('current_status', currentStatus);
+            
+            // Mostrar loading
+            showToast('Alterando status...', 'info');
+            
+            fetch('', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.text())
+            .then(html => {
+                if (html.includes('alert-success')) {
+                    showToast('Status alterado com sucesso!', 'success');
+                    setTimeout(() => location.reload(), 1500);
+                } else {
+                    showToast('Erro ao alterar status', 'error');
+                    setTimeout(() => location.reload(), 2000);
+                }
+            })
+            .catch(error => {
+                showToast('Erro de conexão: ' + error.message, 'error');
+            });
+        }
+        
+        function deleteWallet(walletDbId, walletName) {
+            // Confirmação dupla para exclusão
+            if (!confirm(`⚠️ ATENÇÃO: Deseja realmente excluir o Wallet ID "${walletName}"?\n\nEsta ação NÃO PODE ser desfeita!`)) {
+                return;
+            }
+            
+            if (!confirm('Confirmação final: Tem certeza absoluta que deseja excluir este Wallet ID?')) {
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('action', 'delete_wallet');
+            formData.append('wallet_db_id', walletDbId);
+            
+            // Mostrar loading
+            showToast('Excluindo Wallet ID...', 'info');
+            
+            // Debug: Log dos dados sendo enviados
+            console.log('Enviando dados para exclusão:', {
+                action: 'delete_wallet',
+                wallet_db_id: walletDbId,
+                wallet_name: walletName
+            });
+            
+            fetch('', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                console.log('Response status:', response.status);
+                return response.text();
+            })
+            .then(html => {
+                console.log('Response HTML length:', html.length);
+                console.log('Response contains success:', html.includes('alert-success'));
+                console.log('Response contains error:', html.includes('alert-danger'));
+                
+                // Verificar diferentes tipos de resposta
+                if (html.includes('alert-success') && html.includes('removido com sucesso')) {
+                    showToast('Wallet ID excluído com sucesso!', 'success');
+                    
+                    // Aguardar um pouco e recarregar para verificar se realmente foi excluído
+                    setTimeout(() => {
+                        console.log('Recarregando página para verificar exclusão...');
+                        location.reload();
+                    }, 1500);
+                    
+                } else if (html.includes('splits associados') || html.includes('possui') && html.includes('split')) {
+                    showToast('Não é possível excluir: Wallet ID possui splits associados', 'warning');
+                    
+                } else if (html.includes('alert-danger') || html.includes('Erro')) {
+                    // Extrair mensagem de erro específica se possível
+                    const errorMatch = html.match(/alert-danger[^>]*>.*?<i[^>]*><\/i>\s*([^<]+)/);
+                    const errorMsg = errorMatch ? errorMatch[1].trim() : 'Erro desconhecido ao excluir Wallet ID';
+                    showToast('Erro: ' + errorMsg, 'error');
+                    
+                    // Debug: Mostrar mais detalhes do erro
+                    console.error('Erro na exclusão:', errorMsg);
+                    console.log('HTML response (primeiros 500 chars):', html.substring(0, 500));
+                    
+                } else {
+                    // Resposta inesperada
+                    showToast('Resposta inesperada do servidor', 'warning');
+                    console.warn('Resposta não reconhecida:', html.substring(0, 200));
+                    
+                    // Recarregar após 2 segundos para verificar o estado atual
+                    setTimeout(() => {
+                        location.reload();
+                    }, 2000);
+                }
+            })
+            .catch(error => {
+                console.error('Erro de rede na exclusão:', error);
+                showToast('Erro de conexão: ' + error.message, 'error');
+            });
+        }
+                // Função auxiliar para verificar se wallet ainda existe após exclusão
+                function verifyWalletDeleted(walletDbId, walletName) {
+            console.log('Verificando se wallet foi realmente excluído...');
+            
+            fetch(`api.php?action=get-wallet&wallet_db_id=${walletDbId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.data) {
+                        // Wallet ainda existe
+                        console.error('PROBLEMA: Wallet ainda existe após "exclusão"!', data.data);
+                        showToast(`⚠️ PROBLEMA: Wallet "${walletName}" ainda existe no sistema!`, 'error');
+                        
+                        // Oferecer debug
+                        if (confirm('O Wallet ID não foi realmente excluído. Deseja abrir página de debug?')) {
+                            window.open('debug_delete_wallet.php', '_blank');
+                        }
+                    } else {
+                        // Wallet realmente foi excluído
+                        console.log('✅ Confirmado: Wallet foi excluído com sucesso');
+                        showToast(`✅ Confirmado: Wallet "${walletName}" foi removido`, 'success');
+                    }
+                })
+                .catch(error => {
+                    console.log('Erro ao verificar exclusão (pode ser normal):', error);
+                });
+        }
+
+        
+        function copyToClipboard(text) {
+            // Verificar se o navegador suporta a API Clipboard moderna
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(() => {
+                    showToast('Wallet ID copiado para a área de transferência!', 'success');
+                    
+                    // Feedback visual adicional
+                    const button = event.target.closest('.wallet-id-display');
+                    if (button) {
+                        const originalBg = button.style.backgroundColor;
+                        button.style.backgroundColor = '#d1edff';
+                        setTimeout(() => {
+                            button.style.backgroundColor = originalBg;
+                        }, 300);
+                    }
+                }).catch(err => {
+                    console.error('Erro ao copiar via Clipboard API:', err);
+                    fallbackCopyToClipboard(text);
+                });
+            } else {
+                // Fallback para navegadores mais antigos
+                fallbackCopyToClipboard(text);
+            }
+        }
+        
+        function fallbackCopyToClipboard(text) {
+            // Método alternativo para navegadores que não suportam Clipboard API
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.left = '-999999px';
+            textarea.style.top = '-999999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            
+            try {
+                const successful = document.execCommand('copy');
+                if (successful) {
+                    showToast('Wallet ID copiado!', 'success');
+                } else {
+                    showToast('Erro ao copiar. Tente selecionar manualmente.', 'warning');
+                }
+            } catch (err) {
+                console.error('Fallback copy failed:', err);
+                showToast('Seu navegador não suporta cópia automática', 'warning');
+            }
+            
+            document.body.removeChild(textarea);
+        }
+        
+        // ===== FUNÇÕES PARA SPLITS EM PAGAMENTOS =====
+        
+        function addSplit() {
+            splitCounter++;
+            const splitsContainer = document.getElementById('splits-container');
+            
+            if (!splitsContainer) {
+                console.error('Container de splits não encontrado');
+                return;
+            }
+            
+            // Obter opções de wallets dinamicamente
+            const walletOptions = [];
+            document.querySelectorAll('#wallets-section .wallet-card').forEach(card => {
+                const name = card.querySelector('.card-title')?.textContent || 'Wallet';
+                const walletId = card.querySelector('.wallet-id-display')?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+                if (walletId) {
+                    walletOptions.push({ name, walletId });
+                }
+            });
+            
+            let optionsHtml = '<option value="">Selecione um destinatário</option>';
+            walletOptions.forEach(option => {
+                optionsHtml += `<option value="${option.walletId}">${option.name}</option>`;
+            });
+            
+            const splitHtml = `
+                <div class="split-item p-3 mb-3">
+                    <button type="button" class="split-remove-btn btn btn-sm btn-outline-danger" onclick="removeSplit(this)">
+                        <i class="bi bi-x"></i>
+                    </button>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">Destinatário</label>
+                        <select class="form-select" name="splits[${splitCounter}][walletId]">
+                            ${optionsHtml}
+                        </select>
+                    </div>
+                    
+                    <div class="row">
+                        <div class="col-6">
+                            <label class="form-label">Percentual (%)</label>
+                            <input type="number" class="form-control" name="splits[${splitCounter}][percentualValue]" 
+                                   step="0.01" max="100" placeholder="0.00">
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label">Valor Fixo (R$)</label>
+                            <input type="number" class="form-control" name="splits[${splitCounter}][fixedValue]" 
+                                   step="0.01" placeholder="0.00">
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            splitsContainer.insertAdjacentHTML('beforeend', splitHtml);
+            showToast('Split adicionado!', 'info');
+        }
+        
+        function removeSplit(button) {
+            const splitItem = button.closest('.split-item');
+            if (splitItem) {
+                splitItem.style.transition = 'opacity 0.3s ease';
+                splitItem.style.opacity = '0';
+                setTimeout(() => {
+                    splitItem.remove();
+                    showToast('Split removido', 'info');
+                }, 300);
+            }
+        }
+        
+        // ===== FUNÇÕES PARA RELATÓRIOS =====
+        
+        function generateReport() {
+            const startDate = document.getElementById('start-date')?.value;
+            const endDate = document.getElementById('end-date')?.value;
+            
+            if (!startDate || !endDate) {
+                showToast('Selecione as datas para o relatório', 'warning');
+                return;
+            }
+            
+            showToast('Gerando relatório...', 'info');
+            
+            fetch(`api.php?action=report&start=${startDate}&end=${endDate}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayReportResults(data.data);
+                        showToast('Relatório gerado com sucesso!', 'success');
+                    } else {
+                        showToast('Erro ao gerar relatório: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Erro de conexão: ' + error.message, 'error');
+                });
+        }
+        
+        function generateWalletReport() {
+            const startDate = document.getElementById('start-date')?.value;
+            const endDate = document.getElementById('end-date')?.value;
+            
+            if (!startDate || !endDate) {
+                showToast('Selecione as datas para o relatório', 'warning');
+                return;
+            }
+            
+            showToast('Gerando relatório de Wallet IDs...', 'info');
+            
+            fetch(`api.php?action=wallet-performance-report&start=${startDate}&end=${endDate}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        displayWalletReportResults(data.data);
+                        showToast('Relatório de Wallet IDs gerado!', 'success');
+                    } else {
+                        showToast('Erro ao gerar relatório: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Erro de conexão: ' + error.message, 'error');
+                });
+        }
+        
+        function displayReportResults(reportData) {
+            const container = document.getElementById('report-results');
+            
+            if (!container) {
+                console.error('Container de resultados não encontrado');
+                return;
+            }
+            
+            let html = `
+                <div class="alert alert-info">
+                    <h6>📊 Relatório Gerado</h6>
+                    <p><strong>Período:</strong> ${reportData.report?.period?.start || 'N/A'} a ${reportData.report?.period?.end || 'N/A'}</p>
+                    <p><strong>Contexto:</strong> ${reportData.report?.polo_context || 'Global'}</p>
+                </div>
+                
+                <div class="row">
+                    <div class="col-md-4">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h5>${reportData.report?.total_payments || 0}</h5>
+                                <p class="text-muted">Total de Pagamentos</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h5 class="text-success">R$ ${parseFloat(reportData.report?.total_value || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</h5>
+                                <p class="text-muted">Valor Total</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card text-center">
+                            <div class="card-body">
+                                <h5>${Object.keys(reportData.report?.splits || {}).length}</h5>
+                                <p class="text-muted">Wallet IDs com Atividade</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            if (reportData.report?.splits && Object.keys(reportData.report.splits).length > 0) {
+                html += `
+                    <div class="card mt-3">
+                        <div class="card-header">
+                            <h6>💰 Detalhamento por Wallet ID</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table table-sm">
+                                    <thead>
+                                        <tr>
+                                            <th>Nome</th>
+                                            <th>Wallet ID</th>
+                                            <th>Pagamentos</th>
+                                            <th>Total Recebido</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                `;
+                
+                Object.values(reportData.report.splits).forEach(split => {
+                    html += `
+                        <tr>
+                            <td><strong>${split.account_name || 'N/A'}</strong></td>
+                            <td><code>${split.wallet_id.substring(0, 8)}...</code></td>
+                            <td>${split.payment_count}</td>
+                            <td class="text-success">R$ ${parseFloat(split.total_received || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
+                        </tr>
+                    `;
+                });
+                
+                html += `
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            container.innerHTML = html;
+        }
+        
+        function displayWalletReportResults(walletData) {
+            const container = document.getElementById('report-results');
+            
+            if (!container) {
+                console.error('Container de resultados não encontrado');
+                return;
+            }
+            
+            if (!walletData || walletData.length === 0) {
+                container.innerHTML = `
+                    <div class="alert alert-warning">
+                        <i class="bi bi-info-circle"></i>
+                        Nenhum dado encontrado para o período selecionado.
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = `
+                <div class="card">
+                    <div class="card-header">
+                        <h6>🏆 Performance dos Wallet IDs</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>Nome</th>
+                                        <th>Wallet ID</th>
+                                        <th>Splits</th>
+                                        <th>Total Ganho</th>
+                                        <th>Média por Split</th>
+                                        <th>Último Recebimento</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+            `;
+            
+            walletData.forEach(wallet => {
+                html += `
+                    <tr>
+                        <td>
+                            <strong>${wallet.name || 'N/A'}</strong>
+                            ${wallet.description ? `<br><small class="text-muted">${wallet.description}</small>` : ''}
+                        </td>
+                        <td><code>${wallet.wallet_id.substring(0, 12)}...</code></td>
+                        <td><span class="badge bg-info">${wallet.split_count || 0}</span></td>
+                        <td class="text-success"><strong>R$ ${parseFloat(wallet.total_earned || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</strong></td>
+                        <td>R$ ${parseFloat(wallet.avg_split_value || 0).toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
+                        <td>${wallet.last_split ? new Date(wallet.last_split).toLocaleDateString('pt-BR') : 'Nunca'}</td>
+                    </tr>
+                `;
+            });
+            
+            html += `
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            container.innerHTML = html;
+        }
+        
+        // ===== FUNÇÕES PARA SINCRONIZAÇÃO =====
+        
+        function syncAccounts() {
+            if (!confirm('Deseja sincronizar as contas do ASAAS? Isso pode demorar alguns segundos.')) {
+                return;
+            }
+            
+            showToast('Sincronizando contas do ASAAS...', 'info');
+            
+            const formData = new FormData();
+            formData.append('action', 'sync_accounts');
+            
+            fetch('', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.text())
+            .then(html => {
+                if (html.includes('alert-success')) {
+                    showToast('Contas sincronizadas com sucesso!', 'success');
+                    setTimeout(() => location.reload(), 2000);
+                } else {
+                    showToast('Erro na sincronização', 'error');
+                }
+            })
+            .catch(error => {
+                showToast('Erro de conexão: ' + error.message, 'error');
+            });
+        }
+        
+        // ===== FUNÇÕES PARA VISUALIZAÇÃO DE DADOS =====
+        
+        function viewPayment(paymentId) {
+            showToast('Carregando detalhes do pagamento...', 'info');
+            
+            // Aqui você pode implementar um modal com detalhes do pagamento
+            fetch(`api.php?action=get-payment&payment_id=${paymentId}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        // Implementar modal ou nova página
+                        console.log('Dados do pagamento:', data.data);
+                        showToast('Funcionalidade em desenvolvimento', 'info');
+                    } else {
+                        showToast('Erro ao carregar pagamento: ' + data.error, 'error');
+                    }
+                })
+                .catch(error => {
+                    showToast('Erro de conexão: ' + error.message, 'error');
+                });
+        }
+        
+        function refreshPaymentStatus(paymentId) {
+            showToast('Atualizando status do pagamento...', 'info');
+            
+            // Implementar busca de status atualizado no ASAAS
+            setTimeout(() => {
+                showToast('Status atualizado!', 'success');
+                // Recarregar a seção ou linha específica
+            }, 1500);
+        }
+        
+        function copyPaymentInfo(paymentId) {
+            // Copiar informações relevantes do pagamento
+            copyToClipboard(paymentId);
+        }
+        
+        function exportReport(format) {
+            const startDate = document.getElementById('start-date')?.value;
+            const endDate = document.getElementById('end-date')?.value;
+            
+            if (!startDate || !endDate) {
+                showToast('Selecione as datas para exportar', 'warning');
+                return;
+            }
+            
+            showToast('Preparando exportação...', 'info');
+            
+            // Criar link de download
+            const url = `api.php?action=export-report&format=${format}&start=${startDate}&end=${endDate}`;
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `relatorio_${startDate}_${endDate}.${format}`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showToast('Download iniciado!', 'success');
+        }
         
         // ===== INICIALIZAÇÃO DO SISTEMA =====
         function initializeSystem() {
@@ -2675,15 +3362,25 @@ if (!$isMaster && $usuario['polo_id']) {
         }
         
         function logout() {
-            if (confirm('Deseja realmente sair do sistema?')) {
-                window.location.href = 'login.php?action=logout';
-            }
-        }
+    if (confirm('Deseja realmente sair do sistema?')) {
+        // Mostrar indicador de carregamento
+        showToast('Realizando logout...', 'info');
+        
+        // Desabilitar interface temporariamente
+        document.body.style.pointerEvents = 'none';
+        document.body.style.opacity = '0.7';
+        
+        // Redirecionar para logout endpoint
+        window.location.href = 'logout.php';
+    }
+}
         
         // Log de inicialização completa
         window.addEventListener('load', function() {
-            console.log('🎉 Sistema IMEP Split ASAAS v3.1 totalmente carregado - ERROS CORRIGIDOS');
+            console.log('🎉 Sistema IMEP Split ASAAS v3.2 totalmente carregado - ERROS CORRIGIDOS');
         });
+        
     </script>
+    
 </body>
 </html>

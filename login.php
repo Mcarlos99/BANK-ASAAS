@@ -1,6 +1,6 @@
 <?php
 /**
- * Login Funcional - Versão Corrigida
+ * Login Funcional - Versão Corrigida com Logout
  * Arquivo: login.php
  */
 
@@ -14,7 +14,17 @@ require_once "config.php";
 require_once "auth.php";
 
 $erro = "";
+$sucesso = "";
 $debug = [];
+
+// Verificar mensagens de logout
+if (isset($_GET['message'])) {
+    $sucesso = $_GET['message'];
+}
+
+if (isset($_GET['error'])) {
+    $erro = $_GET['error'];
+}
 
 // Debug: verificar se POST foi recebido
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
@@ -91,6 +101,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
         .login-card { background: rgba(255,255,255,0.95); border-radius: 15px; box-shadow: 0 15px 35px rgba(0,0,0,0.1); }
         .btn-login { background: linear-gradient(45deg, #667eea, #764ba2); border: none; }
         .debug-info { background: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; font-size: 12px; margin-top: 10px; }
+        .alert { border-radius: 8px; }
     </style>
 </head>
 <body class="d-flex align-items-center">
@@ -105,6 +116,12 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
                     </div>
                     
                     <!-- Mensagens -->
+                    <?php if ($sucesso): ?>
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i> <?php echo htmlspecialchars($sucesso); ?>
+                        </div>
+                    <?php endif; ?>
+                    
                     <?php if ($erro): ?>
                         <div class="alert alert-danger">
                             <i class="bi bi-exclamation-triangle"></i> <?php echo htmlspecialchars($erro); ?>
@@ -156,7 +173,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
                     </div>
                     
                     <!-- Debug Info (remover em produção) -->
-                    <?php if (!empty($debug)): ?>
+                    <?php if (!empty($debug) && defined('DEBUG') && DEBUG): ?>
                         <div class="debug-info">
                             <strong>Debug Info:</strong><br>
                             <?php foreach ($debug as $info): ?>
@@ -196,6 +213,20 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
                 document.getElementById("senha").value = "admin123";
                 document.getElementById("senha").focus();
             }
+        });
+        
+        // Auto-hide alerts after 5 seconds
+        document.addEventListener("DOMContentLoaded", function() {
+            const alerts = document.querySelectorAll('.alert-success, .alert-info');
+            alerts.forEach(function(alert) {
+                setTimeout(function() {
+                    alert.style.transition = 'opacity 0.5s';
+                    alert.style.opacity = '0';
+                    setTimeout(function() {
+                        alert.remove();
+                    }, 500);
+                }, 5000);
+            });
         });
     </script>
 </body>
