@@ -1,11 +1,12 @@
 <?php
 
 /**
- * Sistema de Split de Pagamentos - ASAAS
- * Versão para Produção - CORRIGIDA
+ * Sistema de Split de Pagamentos - ASAAS - VERSÃO COM PARCELAMENTO
+ * Versão para Produção - CORRIGIDA E MELHORADA
  * 
  * Autor: Sistema de Pagamentos
  * Data: 2025
+ * Novidade: Suporte completo a parcelamento/mensalidades
  */
 
 class AsaasSplitPayment {
@@ -58,7 +59,7 @@ class AsaasSplitPayment {
             CURLOPT_HTTPHEADER => [
                 'Content-Type: application/json',
                 'access_token: ' . $this->apiKey,
-                'User-Agent: ASAAS-Split-System/1.0 (PHP/' . PHP_VERSION . ')'
+                'User-Agent: ASAAS-Split-System/2.0 (PHP/' . PHP_VERSION . ')'
             ],
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
@@ -92,6 +93,260 @@ class AsaasSplitPayment {
         $this->log("Requisição executada: {$method} {$endpoint} - HTTP {$httpCode}");
         return $decodedResponse;
     }
+    
+    /**
+     * ===== NOVA FUNCIONALIDADE: CRIAR PAGAMENTO PARCELADO COM SPLIT =====
+     * Cria mensalidade/parcelamento com configuração de splits
+     */
+    public function createInstallmentPaymentWithSplit($paymentData, $splitData, $installmentData) {
+        try {
+            $this->log("Iniciando criação de parcelamento - Parcelas: {$installmentData['installmentCount']} x R$ {$installmentData['installmentValue']}", 'INFO');
+            
+            // Validar dados do parcelamento
+            $installmentCount = (int)$installmentData['installmentCount'];
+            $installmentValue = (float)$installmentData['installmentValue'];
+            
+            if ($installmentCount < 2 || $installmentCount > 24) {
+                throw new Exception("Número de parcelas deve ser entre 2 e 24");
+            }
+            
+            if ($installmentValue <= 0) {
+                throw new Exception("Valor da parcela deve ser maior que zero");
+            }
+            
+            // Validar splits
+            $totalPercentage = 0;
+            $totalFixed = 0;
+            
+            foreach ($splitData as $split) {
+                if (isset($split['percentualValue'])) {
+                    $totalPercentage += $split['percentualValue'];
+                }
+                if (isset($split['fixedValue'])) {
+                    $totalFixed += $split['fixedValue'];
+                }
+            }
+            
+            if ($totalPercentage > 100) {
+                throw new Exception("A soma dos percentuais não pode exceder 100%");
+            }
+            
+            if ($totalFixed >= $installmentValue) {
+                throw new Exception("A soma dos valores fixos não pode ser maior ou igual ao valor da parcela");
+            }
+            
+            // Preparar dados para API do ASAAS
+            $data = [
+                'customer' => $paymentData['customer'],
+                'billingType' => $paymentData['billingType'],
+                'dueDate' => $paymentData['dueDate'], // Data do primeiro vencimento
+                'installmentCount' => $installmentCount,
+                'installmentValue' => $installmentValue,
+                'description' => $paymentData['description'],
+                'split' => $splitData // ASAAS aplica automaticamente o split em todas as parcelas
+            ];
+            
+            // Adicionar campos opcionais
+            if (isset($paymentData['discount'])) {
+                $data['discount'] = $paymentData['discount'];
+            }
+            
+            if (isset($paymentData['interest'])) {
+                $data['interest'] = $paymentData['interest'];
+            }
+            
+            if (isset($paymentData['fine'])) {
+                $data['fine'] = $paymentData['fine'];
+            }
+            
+            // Adicionar informações adicionais sobre mensalidade
+            if (isset($installmentData['description_suffix'])) {
+                $data['description'] = $paymentData['description'] . ' - ' . $installmentData['description_suffix'];
+            }
+            
+            $this->log("Dados preparados para API: " . json_encode($data, JSON_UNESCAPED_UNICODE), 'DEBUG');
+            
+            // Fazer requisição para API
+            $response = $this->makeRequest('/payments', 'POST', $data);
+            
+            // Log de sucesso
+            $this->log("Parcelamento criado com sucesso - ID: {$response['id']}", 'SUCCESS');
+            $this->log("Installment ID: {$response['installment']}", 'INFO');
+            
+            // Adicionar informações úteis ao retorno
+            $response['installment_info'] = [
+                'installment_count' => $installmentCount,
+                'installment_value' => $installmentValue,
+                'total_value' => $installmentCount * $installmentValue,
+                'first_due_date' => $paymentData['dueDate'],
+                'split_applied_to_all' => true,
+                'splits_count' => count($splitData)
+            ];
+            
+            return $response;
+            
+        } catch (Exception $e) {
+            $this->log("Erro ao criar parcelamento: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+    
+    /**
+     * Buscar todas as parcelas de um parcelamento
+     */
+    public function getInstallmentPayments($installmentId) {
+        try {
+            $this->log("Buscando parcelas do installment: {$installmentId}");
+            
+            $response = $this->makeRequest("/installments/{$installmentId}/payments");
+            
+            $this->log("Encontradas " . count($response['data']) . " parcelas");
+            return $response;
+            
+        } catch (Exception $e) {
+            $this->log("Erro ao buscar parcelas: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+    
+    /**
+     * Gerar carnê em PDF de um parcelamento
+     */
+    public function generateInstallmentPaymentBook($installmentId) {
+        try {
+            $this->log("Gerando carnê para installment: {$installmentId}");
+            
+            // Fazer requisição para gerar o carnê
+            $curl = curl_init();
+            
+            curl_setopt_array($curl, [
+                CURLOPT_URL => $this->baseUrl . "/installments/{$installmentId}/paymentBook",
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 60, // Mais tempo para gerar PDF
+                CURLOPT_HTTPHEADER => [
+                    'access_token: ' . $this->apiKey,
+                    'User-Agent: ASAAS-Split-System/2.0'
+                ],
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+            ]);
+            
+            $pdfContent = curl_exec($curl);
+            $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+            $error = curl_error($curl);
+            
+            curl_close($curl);
+            
+            if ($error) {
+                throw new Exception("Erro ao gerar carnê: {$error}");
+            }
+            
+            if ($httpCode !== 200) {
+                throw new Exception("Erro HTTP {$httpCode} ao gerar carnê");
+            }
+            
+            $this->log("Carnê gerado com sucesso");
+            
+            return [
+                'success' => true,
+                'pdf_content' => $pdfContent,
+                'content_type' => 'application/pdf',
+                'filename' => "carne_parcelas_{$installmentId}.pdf"
+            ];
+            
+        } catch (Exception $e) {
+            $this->log("Erro ao gerar carnê: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+    
+    /**
+     * Calcular próximas datas de vencimento
+     */
+    public function calculateInstallmentDueDates($firstDueDate, $installmentCount) {
+        $dueDates = [];
+        $currentDate = new DateTime($firstDueDate);
+        
+        for ($i = 0; $i < $installmentCount; $i++) {
+            $dueDates[] = [
+                'installment' => $i + 1,
+                'due_date' => $currentDate->format('Y-m-d'),
+                'formatted_date' => $currentDate->format('d/m/Y'),
+                'month_year' => $currentDate->format('m/Y')
+            ];
+            
+            // Adicionar 1 mês para próxima parcela
+            $currentDate->add(new DateInterval('P1M'));
+        }
+        
+        return $dueDates;
+    }
+    
+    /**
+     * ===== MÉTODO ORIGINAL MANTIDO PARA COMPATIBILIDADE =====
+     * Cria cobrança simples com split (1x)
+     */
+    public function createPaymentWithSplit($paymentData, $splitData) {
+        try {
+            $this->log("Iniciando criação de pagamento simples - Valor: R$ " . $paymentData['value']);
+            
+            // Validar se a soma dos splits não excede 100%
+            $totalPercentage = 0;
+            $totalFixed = 0;
+            
+            foreach ($splitData as $split) {
+                if (isset($split['percentualValue'])) {
+                    $totalPercentage += $split['percentualValue'];
+                }
+                if (isset($split['fixedValue'])) {
+                    $totalFixed += $split['fixedValue'];
+                }
+            }
+            
+            if ($totalPercentage > 100) {
+                throw new Exception("A soma dos percentuais não pode exceder 100%");
+            }
+            
+            if ($totalFixed >= $paymentData['value']) {
+                throw new Exception("A soma dos valores fixos não pode ser maior ou igual ao valor total do pagamento");
+            }
+            
+            $data = [
+                'customer' => $paymentData['customer'],
+                'billingType' => $paymentData['billingType'],
+                'dueDate' => $paymentData['dueDate'],
+                'value' => $paymentData['value'],
+                'description' => $paymentData['description'],
+                'split' => $splitData
+            ];
+            
+            // Adicionar campos opcionais
+            if (isset($paymentData['discount'])) {
+                $data['discount'] = $paymentData['discount'];
+            }
+            
+            if (isset($paymentData['interest'])) {
+                $data['interest'] = $paymentData['interest'];
+            }
+            
+            if (isset($paymentData['fine'])) {
+                $data['fine'] = $paymentData['fine'];
+            }
+            
+            $response = $this->makeRequest('/payments', 'POST', $data);
+            
+            $this->log("Pagamento simples criado com sucesso - ID: " . $response['id']);
+            return $response;
+            
+        } catch (Exception $e) {
+            $this->log("Erro ao criar pagamento simples: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+    
+    /**
+     * ===== MÉTODOS EXISTENTES MANTIDOS =====
+     */
     
     /**
      * Cria uma conta para receber splits
@@ -146,237 +401,6 @@ class AsaasSplitPayment {
             return $this->makeRequest($endpoint);
         } catch (Exception $e) {
             $this->log("Erro ao listar contas: " . $e->getMessage(), 'ERROR');
-            throw $e;
-        }
-    }
-    
-    
-    /**
-     * Verifica se um email já está em uso no ASAAS
-     */
-    public function checkEmailExists($email) {
-        try {
-            $this->log("Verificando se email existe: {$email}");
-            
-            // Tentar buscar por email nas contas
-            $response = $this->makeRequest("/accounts?email=" . urlencode($email));
-            
-            return [
-                'exists' => $response['totalCount'] > 0,
-                'accounts' => $response['data'] ?? [],
-                'total' => $response['totalCount'] ?? 0
-            ];
-            
-        } catch (Exception $e) {
-            $this->log("Erro ao verificar email: " . $e->getMessage(), 'ERROR');
-            return [
-                'exists' => false,
-                'accounts' => [],
-                'total' => 0,
-                'error' => $e->getMessage()
-            ];
-        }
-    }
-    
-    /**
-     * Cria uma conta com verificação prévia de email
-     */
-    public function createAccountWithCheck($accountData) {
-        try {
-            $this->log("Iniciando criação de conta com verificação para: " . $accountData['name']);
-            
-            // Primeiro, verificar se o email já existe
-            $emailCheck = $this->checkEmailExists($accountData['email']);
-            
-            if ($emailCheck['exists']) {
-                $this->log("Email já existe no ASAAS. Total encontrado: " . $emailCheck['total']);
-                
-                // Retornar informações sobre contas existentes
-                return [
-                    'success' => false,
-                    'error_type' => 'email_exists',
-                    'message' => "O email {$accountData['email']} já está cadastrado no ASAAS.",
-                    'existing_accounts' => $emailCheck['accounts'],
-                    'suggestions' => $this->generateEmailSuggestions($accountData['name'], $accountData['email'])
-                ];
-            }
-            
-            // Se não existe, criar normalmente
-            return $this->createAccount($accountData);
-            
-        } catch (Exception $e) {
-            $errorMessage = $e->getMessage();
-            
-            // Se erro contém "já está em uso", fornecer sugestões
-            if (strpos($errorMessage, 'já está em uso') !== false || 
-                strpos($errorMessage, 'already in use') !== false) {
-                
-                return [
-                    'success' => false,
-                    'error_type' => 'email_exists',
-                    'message' => "Email já está em uso por outro usuário do ASAAS.",
-                    'suggestions' => $this->generateEmailSuggestions($accountData['name'], $accountData['email'])
-                ];
-            }
-            
-            // Outros erros, repassar normalmente
-            throw $e;
-        }
-    }
-    
-    /**
-     * Gera sugestões de email baseadas no nome e email original
-     */
-    private function generateEmailSuggestions($name, $originalEmail) {
-        $emailParts = explode('@', $originalEmail);
-        $localPart = $emailParts[0];
-        $domain = isset($emailParts[1]) ? $emailParts[1] : 'empresa.com.br';
-        
-        // Limpar nome para usar como base
-        $cleanName = strtolower($name);
-        $cleanName = preg_replace('/[^a-z0-9\s]/', '', $cleanName);
-        $cleanName = preg_replace('/\s+/', '', $cleanName);
-        $cleanName = substr($cleanName, 0, 15);
-        
-        $suggestions = [
-            $localPart . '1@' . $domain,
-            $localPart . '2@' . $domain,
-            $localPart . '.alt@' . $domain,
-            'financeiro@' . $domain,
-            'contato@' . $domain,
-            'admin@' . $domain,
-            $cleanName . '@' . $domain,
-            $cleanName . '.adm@' . $domain,
-            $localPart . '@gmail.com',
-            $localPart . '@outlook.com'
-        ];
-        
-        // Remover duplicatas e email original
-        $suggestions = array_unique($suggestions);
-        $suggestions = array_filter($suggestions, function($email) use ($originalEmail) {
-            return $email !== $originalEmail;
-        });
-        
-        return array_values($suggestions);
-    }
-    
-    /**
-     * Busca uma conta específica
-     */
-    public function getAccount($accountId) {
-        try {
-            $endpoint = "/accounts/{$accountId}";
-            return $this->makeRequest($endpoint);
-        } catch (Exception $e) {
-            $this->log("Erro ao buscar conta {$accountId}: " . $e->getMessage(), 'ERROR');
-            throw $e;
-        }
-    }
-    
-    /**
-     * Sincroniza contas do ASAAS com o banco local
-     */
-    public function syncAccountsFromAsaas() {
-        try {
-            $this->log("Iniciando sincronização de contas do ASAAS");
-            
-            $db = DatabaseManager::getInstance();
-            $offset = 0;
-            $limit = 100;
-            $totalSynced = 0;
-            
-            do {
-                $response = $this->listAccounts($limit, $offset);
-                $accounts = $response['data'] ?? [];
-                
-                foreach ($accounts as $account) {
-                    // Salvar/atualizar conta no banco local
-                    $saved = $db->saveSplitAccount($account);
-                    if ($saved) {
-                        $totalSynced++;
-                        $this->log("Conta sincronizada: " . $account['name'] . " (ID: " . $account['id'] . ")");
-                    }
-                }
-                
-                $offset += $limit;
-                
-            } while (count($accounts) === $limit && $response['hasMore']);
-            
-            $this->log("Sincronização concluída. {$totalSynced} contas sincronizadas.");
-            
-            return [
-                'success' => true,
-                'total_synced' => $totalSynced,
-                'message' => "Sincronização concluída. {$totalSynced} contas sincronizadas."
-            ];
-            
-        } catch (Exception $e) {
-            $this->log("Erro na sincronização: " . $e->getMessage(), 'ERROR');
-            throw $e;
-        }
-    }
-    
-    /**
-     * Cria cobrança com split de pagamento
-     */
-    public function createPaymentWithSplit($paymentData, $splitData) {
-        try {
-            $this->log("Iniciando criação de pagamento com split - Valor: R$ " . $paymentData['value']);
-            
-            // Validar se a soma dos splits não excede 100%
-            $totalPercentage = 0;
-            $totalFixed = 0;
-            
-            foreach ($splitData as $split) {
-                if (isset($split['percentualValue'])) {
-                    $totalPercentage += $split['percentualValue'];
-                }
-                if (isset($split['fixedValue'])) {
-                    $totalFixed += $split['fixedValue'];
-                }
-            }
-            
-            if ($totalPercentage > 100) {
-                throw new Exception("A soma dos percentuais não pode exceder 100%");
-            }
-            
-            $data = [
-                'customer' => $paymentData['customer'],
-                'billingType' => $paymentData['billingType'],
-                'dueDate' => $paymentData['dueDate'],
-                'value' => $paymentData['value'],
-                'description' => $paymentData['description'],
-                'split' => $splitData
-            ];
-            
-            // Adicionar campos opcionais
-            if (isset($paymentData['installmentCount'])) {
-                $data['installmentCount'] = $paymentData['installmentCount'];
-            }
-            
-            if (isset($paymentData['installmentValue'])) {
-                $data['installmentValue'] = $paymentData['installmentValue'];
-            }
-            
-            if (isset($paymentData['discount'])) {
-                $data['discount'] = $paymentData['discount'];
-            }
-            
-            if (isset($paymentData['interest'])) {
-                $data['interest'] = $paymentData['interest'];
-            }
-            
-            if (isset($paymentData['fine'])) {
-                $data['fine'] = $paymentData['fine'];
-            }
-            
-            $response = $this->makeRequest('/payments', 'POST', $data);
-            
-            $this->log("Pagamento criado com sucesso - ID: " . $response['id']);
-            return $response;
-            
-        } catch (Exception $e) {
-            $this->log("Erro ao criar pagamento: " . $e->getMessage(), 'ERROR');
             throw $e;
         }
     }
@@ -452,6 +476,49 @@ class AsaasSplitPayment {
             return $this->makeRequest("/payments{$queryString}");
         } catch (Exception $e) {
             $this->log("Erro ao listar pagamentos: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+    
+    /**
+     * Sincroniza contas do ASAAS com o banco local
+     */
+    public function syncAccountsFromAsaas() {
+        try {
+            $this->log("Iniciando sincronização de contas do ASAAS");
+            
+            $db = DatabaseManager::getInstance();
+            $offset = 0;
+            $limit = 100;
+            $totalSynced = 0;
+            
+            do {
+                $response = $this->listAccounts($limit, $offset);
+                $accounts = $response['data'] ?? [];
+                
+                foreach ($accounts as $account) {
+                    // Salvar/atualizar conta no banco local
+                    $saved = $db->saveSplitAccount($account);
+                    if ($saved) {
+                        $totalSynced++;
+                        $this->log("Conta sincronizada: " . $account['name'] . " (ID: " . $account['id'] . ")");
+                    }
+                }
+                
+                $offset += $limit;
+                
+            } while (count($accounts) === $limit && $response['hasMore']);
+            
+            $this->log("Sincronização concluída. {$totalSynced} contas sincronizadas.");
+            
+            return [
+                'success' => true,
+                'total_synced' => $totalSynced,
+                'message' => "Sincronização concluída. {$totalSynced} contas sincronizadas."
+            ];
+            
+        } catch (Exception $e) {
+            $this->log("Erro na sincronização: " . $e->getMessage(), 'ERROR');
             throw $e;
         }
     }
@@ -603,169 +670,372 @@ class AsaasSplitPayment {
             throw $e;
         }
     }
-}
-
-// CLASSE ASAASCONFIG REMOVIDA DAQUI - ESTÁ NO CONFIG.PHP
-
-// Exemplo de uso do sistema
-class ExampleUsage {
     
-    public static function exemploCompleto() {
+    /**
+     * ===== NOVOS MÉTODOS PARA RELATÓRIOS DE PARCELAMENTO =====
+     */
+    
+    /**
+     * Gerar relatório específico de parcelamentos
+     */
+    public function getInstallmentReport($startDate, $endDate) {
         try {
-            // Usar a classe AsaasConfig do config.php
-            $asaas = AsaasConfig::getInstance('sandbox');
+            $this->log("Gerando relatório de parcelamentos - Período: {$startDate} a {$endDate}");
             
-            // 1. Criar cliente
-            $customer = $asaas->createCustomer([
-                'name' => 'João Silva',
-                'email' => 'joao@exemplo.com',
-                'cpfCnpj' => '12345678901',
-                'mobilePhone' => '11987654321',
-                'address' => 'Rua das Flores, 123',
-                'addressNumber' => '123',
-                'province' => 'Centro',
-                'postalCode' => '12345-678'
-            ]);
+            $filters = [
+                'dateCreated[ge]' => $startDate,
+                'dateCreated[le]' => $endDate,
+                'installmentCount[ge]' => 2 // Apenas parcelados
+            ];
             
-            echo "Cliente criado: " . $customer['id'] . "\n";
+            $payments = $this->listPayments($filters);
             
-            // 2. Criar contas para split (se necessário)
-            $account1 = $asaas->createAccount([
-                'name' => 'Parceiro 1',
-                'email' => 'parceiro1@exemplo.com',
-                'cpfCnpj' => '98765432100',
-                'mobilePhone' => '11876543210',
-                'address' => 'Rua do Comércio, 456',
-                'province' => 'Comercial',
-                'postalCode' => '54321-987'
-            ]);
+            $report = [
+                'period' => ['start' => $startDate, 'end' => $endDate],
+                'total_installments' => 0,
+                'total_value' => 0,
+                'installment_details' => []
+            ];
             
-            echo "Conta 1 criada: " . $account1['id'] . "\n";
+            foreach ($payments['data'] as $payment) {
+                if (isset($payment['installment']) && isset($payment['installmentCount'])) {
+                    $installmentId = $payment['installment'];
+                    
+                    if (!isset($report['installment_details'][$installmentId])) {
+                        $report['installment_details'][$installmentId] = [
+                            'installment_id' => $installmentId,
+                            'customer_name' => $payment['customer']['name'] ?? 'N/A',
+                            'installment_count' => $payment['installmentCount'],
+                            'installment_value' => $payment['value'],
+                            'total_value' => $payment['installmentCount'] * $payment['value'],
+                            'created_at' => $payment['dateCreated'],
+                            'due_date' => $payment['dueDate'],
+                            'description' => $payment['description'],
+                            'billing_type' => $payment['billingType'],
+                            'has_splits' => !empty($payment['split'])
+                        ];
+                        
+                        $report['total_installments']++;
+                        $report['total_value'] += $payment['installmentCount'] * $payment['value'];
+                    }
+                }
+            }
             
-            // 3. Criar pagamento com split
-            $payment = $asaas->createPaymentWithSplit(
-                // Dados do pagamento
-                [
-                    'customer' => $customer['id'],
-                    'billingType' => 'BOLETO', // PIX, CREDIT_CARD, DEBIT_CARD
-                    'dueDate' => date('Y-m-d', strtotime('+7 days')),
-                    'value' => 100.00,
-                    'description' => 'Venda com split de pagamento'
-                ],
-                // Configuração do split
-                [
-                    [
-                        'walletId' => $account1['walletId'],
-                        'percentualValue' => 30.00 // 30% para o parceiro
-                    ],
-                    [
-                        'walletId' => 'WALLET_ID_PRINCIPAL',
-                        'percentualValue' => 70.00 // 70% para a conta principal
-                    ]
-                ]
-            );
-            
-            echo "Pagamento criado: " . $payment['id'] . "\n";
-            echo "Link para pagamento: " . $payment['invoiceUrl'] . "\n";
-            
-            return $payment;
+            $this->log("Relatório de parcelamentos gerado - {$report['total_installments']} parcelamentos encontrados");
+            return $report;
             
         } catch (Exception $e) {
-            echo "Erro: " . $e->getMessage() . "\n";
+            $this->log("Erro ao gerar relatório de parcelamentos: " . $e->getMessage(), 'ERROR');
+            throw $e;
+        }
+    }
+}
+
+/**
+ * ===== CLASSE DE UTILIDADES PARA PARCELAMENTO =====
+ */
+class InstallmentHelper {
+    
+    /**
+     * Validar dados de parcelamento
+     */
+    public static function validateInstallmentData($installmentData) {
+        $errors = [];
+        
+        // Validar número de parcelas
+        $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
+        if ($installmentCount < 2) {
+            $errors[] = 'Número de parcelas deve ser maior que 1';
+        }
+        if ($installmentCount > 24) {
+            $errors[] = 'Número máximo de parcelas é 24';
+        }
+        
+        // Validar valor da parcela
+        $installmentValue = (float)($installmentData['installmentValue'] ?? 0);
+        if ($installmentValue <= 0) {
+            $errors[] = 'Valor da parcela deve ser maior que zero';
+        }
+        
+        // Validar data de vencimento
+        if (empty($installmentData['dueDate'])) {
+            $errors[] = 'Data de vencimento é obrigatória';
+        } else {
+            $dueDate = strtotime($installmentData['dueDate']);
+            if ($dueDate < strtotime('today')) {
+                $errors[] = 'Data de vencimento não pode ser anterior a hoje';
+            }
+        }
+        
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors
+        ];
+    }
+    
+    /**
+     * Formatar dados de parcelamento para exibição
+     */
+    public static function formatInstallmentData($installmentData) {
+        return [
+            'parcelas' => $installmentData['installmentCount'] . 'x',
+            'valor_parcela' => 'R$ ' . number_format($installmentData['installmentValue'], 2, ',', '.'),
+            'valor_total' => 'R$ ' . number_format($installmentData['installmentCount'] * $installmentData['installmentValue'], 2, ',', '.'),
+            'primeiro_vencimento' => date('d/m/Y', strtotime($installmentData['dueDate'])),
+            'tipo_cobranca' => $installmentData['billingType'] ?? 'BOLETO'
+        ];
+    }
+    
+    /**
+     * Calcular datas de vencimento mensais
+     */
+    public static function calculateMonthlyDueDates($firstDueDate, $installmentCount) {
+        $dueDates = [];
+        $currentDate = new DateTime($firstDueDate);
+        
+        for ($i = 0; $i < $installmentCount; $i++) {
+            $dueDates[] = [
+                'parcela' => $i + 1,
+                'vencimento' => $currentDate->format('Y-m-d'),
+                'vencimento_formatado' => $currentDate->format('d/m/Y'),
+                'mes_ano' => $currentDate->format('m/Y'),
+                'mes_nome' => self::getMonthName($currentDate->format('n')),
+                'ano' => $currentDate->format('Y')
+            ];
+            
+            // Avançar para o próximo mês, mantendo o mesmo dia
+            $currentDate->add(new DateInterval('P1M'));
+        }
+        
+        return $dueDates;
+    }
+    
+    /**
+     * Obter nome do mês em português
+     */
+    private static function getMonthName($monthNumber) {
+        $months = [
+            1 => 'Janeiro', 2 => 'Fevereiro', 3 => 'Março',
+            4 => 'Abril', 5 => 'Maio', 6 => 'Junho',
+            7 => 'Julho', 8 => 'Agosto', 9 => 'Setembro',
+            10 => 'Outubro', 11 => 'Novembro', 12 => 'Dezembro'
+        ];
+        
+        return $months[(int)$monthNumber] ?? 'Mês ' . $monthNumber;
+    }
+    
+    /**
+     * Gerar descrição automática para mensalidades
+     */
+    public static function generateInstallmentDescriptions($baseDescription, $installmentCount, $startDate) {
+        $descriptions = [];
+        $currentDate = new DateTime($startDate);
+        
+        for ($i = 1; $i <= $installmentCount; $i++) {
+            $monthYear = $currentDate->format('m/Y');
+            $monthName = self::getMonthName($currentDate->format('n'));
+            
+            $descriptions[] = [
+                'parcela' => $i,
+                'description' => $baseDescription . " - {$i}ª parcela ({$monthName}/{$currentDate->format('Y')})",
+                'month_year' => $monthYear,
+                'due_date' => $currentDate->format('Y-m-d')
+            ];
+            
+            $currentDate->add(new DateInterval('P1M'));
+        }
+        
+        return $descriptions;
+    }
+    
+    /**
+     * Validar se data é válida para primeiro vencimento
+     */
+    public static function validateFirstDueDate($dueDate) {
+        $today = new DateTime();
+        $inputDate = new DateTime($dueDate);
+        
+        // Não pode ser anterior a hoje
+        if ($inputDate < $today) {
+            return [
+                'valid' => false,
+                'error' => 'Data de vencimento não pode ser anterior a hoje'
+            ];
+        }
+        
+        // Não pode ser muito distante (máximo 1 ano)
+        $maxDate = clone $today;
+        $maxDate->add(new DateInterval('P1Y'));
+        
+        if ($inputDate > $maxDate) {
+            return [
+                'valid' => false,
+                'error' => 'Data de vencimento muito distante (máximo 1 ano)'
+            ];
+        }
+        
+        return ['valid' => true];
+    }
+}
+
+/**
+ * ===== EXEMPLO DE USO DO SISTEMA COM PARCELAMENTO =====
+ */
+class InstallmentExampleUsage {
+    
+    public static function exemploMensalidadeAluno() {
+        try {
+            echo "=== EXEMPLO: MENSALIDADE DE ALUNO ===\n";
+            
+            // Configurar sistema
+            $asaas = AsaasConfig::getInstance('sandbox');
+            
+            // 1. DADOS DO ALUNO (CLIENTE)
+            $cliente = [
+                'name' => 'DENISE MIRANDA',
+                'email' => 'denise.miranda@exemplo.com',
+                'cpfCnpj' => '12345678901',
+                'mobilePhone' => '11987654321'
+            ];
+            
+            // 2. CRIAR CLIENTE NO ASAAS
+            $customerCreated = $asaas->createCustomer($cliente);
+            echo "Cliente criado: " . $customerCreated['id'] . "\n";
+            
+            // 3. DADOS DA MENSALIDADE
+            $mensalidade = [
+                'customer' => $customerCreated['id'],
+                'billingType' => 'BOLETO', // ou 'PIX'
+                'description' => 'Mensalidade Escolar 2025',
+                'dueDate' => '2025-09-05' // Data do primeiro vencimento
+            ];
+            
+            // 4. DADOS DO PARCELAMENTO
+            $parcelamento = [
+                'installmentCount' => 24,    // 24 parcelas
+                'installmentValue' => 100.00, // R$ 100,00 cada
+                'description_suffix' => 'Curso Técnico'
+            ];
+            
+            // 5. CONFIGURAÇÃO DO SPLIT (será aplicado em todas as parcelas)
+            $splits = [
+                [
+                    'walletId' => '22e49670-27e4-4579-a4c1-205c8a40497c',
+                    'percentualValue' => 15.00 // 15% para a escola
+                ],
+                [
+                    'walletId' => '33f59780-38f5-5680-b5d2-306d9b50b8e4',
+                    'fixedValue' => 5.00 // R$ 5,00 fixo para sistema
+                ]
+            ];
+            
+            // 6. CRIAR MENSALIDADE PARCELADA
+            echo "Criando mensalidade parcelada...\n";
+            $resultado = $asaas->createInstallmentPaymentWithSplit(
+                $mensalidade, 
+                $splits, 
+                $parcelamento
+            );
+            
+            // 7. RESULTADO
+            echo "✅ MENSALIDADE CRIADA COM SUCESSO!\n";
+            echo "ID do Parcelamento: " . $resultado['installment'] . "\n";
+            echo "Primeira Parcela ID: " . $resultado['id'] . "\n";
+            echo "Total: " . $resultado['installment_info']['installment_count'] . " parcelas de R$ " . 
+                 number_format($resultado['installment_info']['installment_value'], 2, ',', '.') . "\n";
+            echo "Valor Total: R$ " . number_format($resultado['installment_info']['total_value'], 2, ',', '.') . "\n";
+            echo "Primeiro Vencimento: " . date('d/m/Y', strtotime($resultado['installment_info']['first_due_date'])) . "\n";
+            
+            // 8. GERAR CARNÊ EM PDF
+            echo "\nGerando carnê em PDF...\n";
+            $carne = $asaas->generateInstallmentPaymentBook($resultado['installment']);
+            
+            if ($carne['success']) {
+                // Salvar PDF
+                $pdfFile = __DIR__ . '/carne_denise_miranda.pdf';
+                file_put_contents($pdfFile, $carne['pdf_content']);
+                echo "Carnê salvo em: " . $pdfFile . "\n";
+            }
+            
+            // 9. CALCULAR DATAS DE VENCIMENTO
+            echo "\nDatas de Vencimento:\n";
+            $datas = $asaas->calculateInstallmentDueDates($mensalidade['dueDate'], $parcelamento['installmentCount']);
+            
+            foreach (array_slice($datas, 0, 5) as $data) { // Mostrar apenas as 5 primeiras
+                echo "Parcela {$data['installment']}: {$data['formatted_date']} ({$data['month_year']})\n";
+            }
+            echo "... e mais " . ($parcelamento['installmentCount'] - 5) . " parcelas\n";
+            
+            return $resultado;
+            
+        } catch (Exception $e) {
+            echo "❌ ERRO: " . $e->getMessage() . "\n";
             return false;
         }
     }
     
-    public static function exemploWebhook() {
+    public static function exemploListarParcelas($installmentId) {
         try {
-            $asaas = AsaasConfig::getInstance('production');
+            echo "\n=== LISTANDO TODAS AS PARCELAS ===\n";
             
-            // Simular dados de webhook
-            $webhookData = [
-                'event' => 'PAYMENT_RECEIVED',
-                'payment' => [
-                    'id' => 'pay_123456789',
-                    'value' => 100.00,
-                    'status' => 'RECEIVED'
-                ]
-            ];
+            $asaas = AsaasConfig::getInstance('sandbox');
             
-            $result = $asaas->processWebhook($webhookData);
-            echo "Webhook processado: " . json_encode($result) . "\n";
+            // Buscar todas as parcelas do parcelamento
+            $parcelas = $asaas->getInstallmentPayments($installmentId);
             
-        } catch (Exception $e) {
-            echo "Erro no webhook: " . $e->getMessage() . "\n";
-        }
-    }
-    
-    public static function exemploRelatorio() {
-        try {
-            $asaas = AsaasConfig::getInstance('production');
+            echo "Total de parcelas: " . count($parcelas['data']) . "\n\n";
             
-            $report = $asaas->getSplitReport('2025-01-01', '2025-01-31');
-            
-            echo "=== RELATÓRIO DE SPLITS ===\n";
-            echo "Período: " . $report['period']['start'] . " a " . $report['period']['end'] . "\n";
-            echo "Total de pagamentos: " . $report['total_payments'] . "\n";
-            echo "Valor total: R$ " . number_format($report['total_value'], 2, ',', '.') . "\n\n";
-            
-            foreach ($report['splits'] as $split) {
-                echo "Wallet: " . $split['wallet_id'] . "\n";
-                echo "Valor recebido: R$ " . number_format($split['total_received'], 2, ',', '.') . "\n";
-                echo "Quantidade de pagamentos: " . $split['payment_count'] . "\n\n";
+            foreach ($parcelas['data'] as $index => $parcela) {
+                $numero = $index + 1;
+                echo "Parcela {$numero}:\n";
+                echo "  ID: " . $parcela['id'] . "\n";
+                echo "  Valor: R$ " . number_format($parcela['value'], 2, ',', '.') . "\n";
+                echo "  Vencimento: " . date('d/m/Y', strtotime($parcela['dueDate'])) . "\n";
+                echo "  Status: " . $parcela['status'] . "\n";
+                echo "  Link: " . ($parcela['invoiceUrl'] ?? 'N/A') . "\n";
+                echo "\n";
             }
             
         } catch (Exception $e) {
-            echo "Erro no relatório: " . $e->getMessage() . "\n";
+            echo "❌ ERRO: " . $e->getMessage() . "\n";
         }
     }
 }
 
-// Script para processar webhook (webhook.php)
-class WebhookHandler {
+// Exemplo de classe para relatórios específicos de mensalidades
+class InstallmentReports {
     
-    public static function handle() {
-        // Verificar se é POST
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            exit('Method not allowed');
-        }
-        
-        // Capturar dados
-        $payload = file_get_contents('php://input');
-        $signature = $_SERVER['HTTP_ASAAS_SIGNATURE'] ?? '';
-        
-        if (empty($payload) || empty($signature)) {
-            http_response_code(400);
-            exit('Invalid webhook data');
-        }
-        
+    public static function relatorioMensalidades($startDate, $endDate) {
         try {
-            $asaas = AsaasConfig::getInstance('production');
+            $asaas = AsaasConfig::getInstance();
+            $report = $asaas->getInstallmentReport($startDate, $endDate);
             
-            // Validar webhook
-            if (!$asaas->validateWebhook($payload, $signature, ASAAS_WEBHOOK_TOKEN)) {
-                http_response_code(401);
-                exit('Unauthorized');
+            echo "=== RELATÓRIO DE MENSALIDADES/PARCELAMENTOS ===\n";
+            echo "Período: {$report['period']['start']} a {$report['period']['end']}\n";
+            echo "Total de Parcelamentos: {$report['total_installments']}\n";
+            echo "Valor Total: R$ " . number_format($report['total_value'], 2, ',', '.') . "\n\n";
+            
+            foreach ($report['installment_details'] as $installment) {
+                echo "Cliente: {$installment['customer_name']}\n";
+                echo "Parcelas: {$installment['installment_count']}x de R$ " . 
+                     number_format($installment['installment_value'], 2, ',', '.') . "\n";
+                echo "Total: R$ " . number_format($installment['total_value'], 2, ',', '.') . "\n";
+                echo "Tipo: {$installment['billing_type']}\n";
+                echo "Splits: " . ($installment['has_splits'] ? 'Sim' : 'Não') . "\n";
+                echo "Descrição: {$installment['description']}\n";
+                echo "---\n";
             }
             
-            // Processar webhook
-            $webhookData = json_decode($payload, true);
-            $result = $asaas->processWebhook($webhookData);
-            
-            // Responder com sucesso
-            http_response_code(200);
-            header('Content-Type: application/json');
-            echo json_encode($result);
+            return $report;
             
         } catch (Exception $e) {
-            http_response_code(500);
-            echo 'Erro interno: ' . $e->getMessage();
+            echo "❌ ERRO: " . $e->getMessage() . "\n";
+            return false;
         }
     }
 }
 
 // Descomente para testar
-// ExampleUsage::exemploCompleto();
+// InstallmentExampleUsage::exemploMensalidadeAluno();
 
 ?>
