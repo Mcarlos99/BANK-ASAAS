@@ -1,16 +1,15 @@
 <?php
 /**
- * Configurações do Sistema de Split ASAAS - Versão Multi-Tenant
+ * Configurações do Sistema de Split ASAAS - Versão Multi-Tenant + Mensalidades
  * Arquivo: config.php
- * Versão com suporte a múltiplos polos
+ * Versão com suporte a múltiplos polos E mensalidades parceladas
  */
 
 // Configurações MASTER (usadas apenas pelo admin master)
-// Mantenha as configurações originais para compatibilidade
 define('ASAAS_PRODUCTION_API_KEY', getenv('ASAAS_PRODUCTION_API_KEY') ?: '$aact_prod_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6OjdmNDZhZTU1LWVjYTgtNDY0Mi1hOTg5LTY0NmMxNmM1ZTFkNzo6JGFhY2hfMWYzOTgxNjEtZWRhNy00ZjhhLTk5MGQtNGYwZjY2MzJmZTJk');
 define('ASAAS_SANDBOX_API_KEY', getenv('ASAAS_SANDBOX_API_KEY') ?: '$aact_hmlg_000MzkwODA2MWY2OGM3MWRlMDU2NWM3MzJlNzZmNGZhZGY6OjYyNTE2NTRkLTlhMmYtNGUxMS1iN2NlLTg1ZTQ5OTJjOTYyYjo6JGFhY2hfZjc5MDNiNTUtOWQ3Ny00MDRiLTg4YjctY2YxZmNhNTY5OGY5');
 define('ASAAS_WEBHOOK_TOKEN', getenv('ASAAS_WEBHOOK_TOKEN') ?: 'SEU_WEBHOOK_TOKEN_AQUI');
-define('ASAAS_ENVIRONMENT', getenv('ASAAS_ENVIRONMENT') ?: 'production'); // Master sempre em produção
+define('ASAAS_ENVIRONMENT', getenv('ASAAS_ENVIRONMENT') ?: 'production');
 
 // Configurações do Banco de Dados
 define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
@@ -24,8 +23,14 @@ define('LOG_LEVEL', getenv('LOG_LEVEL') ?: 'INFO');
 define('LOG_RETENTION_DAYS', 30);
 define('WEBHOOK_TIMEOUT', 30);
 
+// NOVAS CONFIGURAÇÕES PARA MENSALIDADES
+define('MAX_INSTALLMENTS', 24);
+define('MIN_INSTALLMENTS', 2);
+define('MIN_INSTALLMENT_VALUE', 1.00);
+define('MAX_INSTALLMENT_VALUE', 50000.00);
+
 /**
- * Classe para gerenciar conexão com banco de dados (atualizada)
+ * Classe para gerenciar conexão com banco de dados (ATUALIZADA COM MENSALIDADES)
  */
 class DatabaseManager {
     
@@ -40,7 +45,12 @@ class DatabaseManager {
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
                 PDO::ATTR_EMULATE_PREPARES => false,
             ]);
+            
+            // Log de conexão bem-sucedida
+            error_log("DatabaseManager: Conexão estabelecida com sucesso");
+            
         } catch (PDOException $e) {
+            error_log("DatabaseManager: Erro na conexão: " . $e->getMessage());
             throw new Exception("Erro na conexão com banco: " . $e->getMessage());
         }
     }
@@ -56,8 +66,354 @@ class DatabaseManager {
         return $this->pdo;
     }
     
-/**
-     * Salvar Wallet ID com suporte a polo - MÉTODO CORRIGIDO
+    // ====================================================
+    // NOVOS MÉTODOS PARA MENSALIDADES/PARCELAMENTOS
+    // ====================================================
+    
+    /**
+     * Salvar registro de parcelamento/mensalidade
+     */
+    public function saveInstallmentRecord($installmentData) {
+        try {
+            error_log("Salvando registro de parcelamento: " . json_encode($installmentData));
+            
+            $stmt = $this->pdo->prepare("
+                INSERT INTO installments (
+                    installment_id, polo_id, customer_id, installment_count, 
+                    installment_value, total_value, first_due_date, 
+                    billing_type, description, has_splits, splits_count, 
+                    created_by, first_payment_id, status, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW()
+                )
+            ");
+            
+            $result = $stmt->execute([
+                $installmentData['installment_id'],
+                $installmentData['polo_id'],
+                $installmentData['customer_id'],
+                $installmentData['installment_count'],
+                $installmentData['installment_value'],
+                $installmentData['total_value'],
+                $installmentData['first_due_date'],
+                $installmentData['billing_type'],
+                $installmentData['description'],
+                $installmentData['has_splits'] ? 1 : 0,
+                $installmentData['splits_count'],
+                $installmentData['created_by'],
+                $installmentData['first_payment_id']
+            ]);
+            
+            if ($result) {
+                $recordId = $this->pdo->lastInsertId();
+                error_log("Parcelamento salvo com sucesso - ID: {$recordId}");
+                return $recordId;
+            } else {
+                throw new Exception("Falha ao executar inserção do parcelamento");
+            }
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao salvar parcelamento: " . $e->getMessage());
+            
+            // Se tabela não existe, tentar criar
+            if (strpos($e->getMessage(), "doesn't exist") !== false || 
+                strpos($e->getMessage(), "Table") !== false) {
+                
+                error_log("Tabela installments não existe, tentando criar...");
+                if ($this->createInstallmentsTable()) {
+                    // Tentar novamente após criar a tabela
+                    return $this->saveInstallmentRecord($installmentData);
+                }
+            }
+            
+            throw new Exception("Erro ao salvar parcelamento: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Criar tabela de mensalidades se não existir
+     */
+    public function createInstallmentsTable() {
+        try {
+            error_log("Criando tabela installments...");
+            
+            $sql = "CREATE TABLE IF NOT EXISTS installments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                installment_id VARCHAR(100) NOT NULL UNIQUE,
+                polo_id INT NULL,
+                customer_id VARCHAR(100) NOT NULL,
+                installment_count INT NOT NULL,
+                installment_value DECIMAL(10,2) NOT NULL,
+                total_value DECIMAL(10,2) NOT NULL,
+                first_due_date DATE NOT NULL,
+                billing_type VARCHAR(20) NOT NULL,
+                description TEXT,
+                has_splits BOOLEAN DEFAULT 0,
+                splits_count INT DEFAULT 0,
+                created_by INT,
+                first_payment_id VARCHAR(100),
+                status ENUM('ACTIVE', 'CANCELLED', 'COMPLETED') DEFAULT 'ACTIVE',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_customer_id (customer_id),
+                INDEX idx_status (status),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            error_log("Tabela installments criada com sucesso");
+            
+            // Criar também tabela de parcelas individuais
+            $this->createInstallmentPaymentsTable();
+            
+            return true;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela installments: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela para acompanhar parcelas individuais
+     */
+    public function createInstallmentPaymentsTable() {
+        try {
+            error_log("Criando tabela installment_payments...");
+            
+            $sql = "CREATE TABLE IF NOT EXISTS installment_payments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                installment_id VARCHAR(100) NOT NULL,
+                payment_id VARCHAR(100) NOT NULL,
+                installment_number INT NOT NULL,
+                due_date DATE NOT NULL,
+                value DECIMAL(10,2) NOT NULL,
+                status VARCHAR(20) DEFAULT 'PENDING',
+                paid_date DATETIME NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_payment_id (payment_id),
+                INDEX idx_due_date (due_date),
+                INDEX idx_status (status),
+                
+                FOREIGN KEY (installment_id) REFERENCES installments(installment_id) ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            error_log("Tabela installment_payments criada com sucesso");
+            
+            return true;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela installment_payments: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Obter parcelamentos por período (com filtro de polo)
+     */
+    public function getInstallmentsByPeriod($startDate, $endDate, $poloId = null) {
+        try {
+            $query = "
+                SELECT i.*, c.name as customer_name, c.email as customer_email,
+                       u.nome as created_by_name,
+                       COUNT(ip.id) as payments_made,
+                       SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END) as amount_received
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                LEFT JOIN usuarios u ON i.created_by = u.id
+                LEFT JOIN installment_payments ip ON i.installment_id = ip.installment_id AND ip.status = 'RECEIVED'
+                WHERE i.created_at BETWEEN ? AND ?
+            ";
+            
+            $params = [$startDate, $endDate];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $query .= " GROUP BY i.id ORDER BY i.created_at DESC";
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetchAll();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao buscar parcelamentos por período: " . $e->getMessage());
+            return [];
+        }
+    }
+    
+    /**
+     * Obter informações de um parcelamento específico
+     */
+    public function getInstallmentInfo($installmentId) {
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT i.*, c.name as customer_name, c.email as customer_email,
+                       u.nome as created_by_name
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                LEFT JOIN usuarios u ON i.created_by = u.id
+                WHERE i.installment_id = ?
+            ");
+            
+            $stmt->execute([$installmentId]);
+            return $stmt->fetch();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao buscar informações do parcelamento: " . $e->getMessage());
+            return null;
+        }
+    }
+    
+    /**
+     * Salvar parcela individual de um parcelamento
+     */
+    public function saveInstallmentPayment($installmentId, $paymentData) {
+        try {
+            $stmt = $this->pdo->prepare("
+                INSERT INTO installment_payments (
+                    installment_id, payment_id, installment_number, 
+                    due_date, value, status
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    status = VALUES(status),
+                    paid_date = CASE WHEN VALUES(status) = 'RECEIVED' THEN NOW() ELSE paid_date END,
+                    updated_at = CURRENT_TIMESTAMP
+            ");
+            
+            return $stmt->execute([
+                $installmentId,
+                $paymentData['id'],
+                $paymentData['installment_number'] ?? 1,
+                $paymentData['dueDate'],
+                $paymentData['value'],
+                $paymentData['status'] ?? 'PENDING'
+            ]);
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao salvar parcela individual: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Atualizar status de uma parcela
+     */
+    public function updateInstallmentPaymentStatus($paymentId, $status) {
+        try {
+            $stmt = $this->pdo->prepare("
+                UPDATE installment_payments 
+                SET status = ?, 
+                    paid_date = CASE WHEN ? = 'RECEIVED' THEN NOW() ELSE paid_date END,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE payment_id = ?
+            ");
+            
+            return $stmt->execute([$status, $status, $paymentId]);
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao atualizar status da parcela: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Obter estatísticas de mensalidades (com filtro de polo)
+     */
+    public function getInstallmentStats($poloId = null) {
+        try {
+            $query = "
+                SELECT 
+                    COUNT(*) as total_installments,
+                    SUM(installment_count) as total_payments_expected,
+                    SUM(total_value) as total_value_expected,
+                    AVG(installment_count) as avg_installments_per_customer,
+                    AVG(installment_value) as avg_installment_value,
+                    COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) as active_installments,
+                    COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed_installments,
+                    COUNT(CASE WHEN has_splits = 1 THEN 1 END) as installments_with_splits
+                FROM installments
+                WHERE 1=1
+            ";
+            
+            $params = [];
+            
+            if ($poloId !== null) {
+                $query .= " AND polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetch();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao obter estatísticas de parcelamentos: " . $e->getMessage());
+            return [
+                'total_installments' => 0,
+                'total_payments_expected' => 0,
+                'total_value_expected' => 0,
+                'avg_installments_per_customer' => 0,
+                'avg_installment_value' => 0,
+                'active_installments' => 0,
+                'completed_installments' => 0,
+                'installments_with_splits' => 0
+            ];
+        }
+    }
+    
+    /**
+     * Obter mensalidades recentes (com filtro de polo)
+     */
+    public function getRecentInstallments($limit = 10, $poloId = null) {
+        try {
+            $query = "
+                SELECT i.*, c.name as customer_name, c.email as customer_email,
+                       (SELECT COUNT(*) FROM installment_payments ip WHERE ip.installment_id = i.installment_id AND ip.status = 'RECEIVED') as payments_received,
+                       (SELECT SUM(value) FROM installment_payments ip WHERE ip.installment_id = i.installment_id AND ip.status = 'RECEIVED') as amount_received
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                WHERE 1=1
+            ";
+            
+            $params = [];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $query .= " ORDER BY i.created_at DESC LIMIT ?";
+            $params[] = $limit;
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetchAll();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao buscar mensalidades recentes: " . $e->getMessage());
+            return [];
+        }
+    }
+    
+    // ====================================================
+    // MÉTODOS EXISTENTES MANTIDOS E ATUALIZADOS
+    // ====================================================
+    
+    /**
+     * Salvar Wallet ID com suporte a polo - MÉTODO MANTIDO
      */
     public function saveWalletId($walletData) {
         try {
@@ -65,21 +421,19 @@ class DatabaseManager {
             error_log("Dados recebidos: " . json_encode($walletData));
             
             $walletId = $walletData['wallet_id'];
-            $novoPoloId = $walletData['polo_id']; // Pode ser NULL para master
+            $novoPoloId = $walletData['polo_id'];
             
             error_log("UUID: {$walletId}");
             error_log("Novo Polo ID: " . ($novoPoloId ?? 'NULL'));
             
-            // VERIFICAÇÃO CORRIGIDA: Buscar apenas no MESMO polo
+            // VERIFICAÇÃO: Buscar apenas no MESMO polo
             if ($novoPoloId === null) {
-                // Para registros globais (master), verificar apenas outros globais
                 $checkStmt = $this->pdo->prepare("
                     SELECT id, name, polo_id FROM wallet_ids 
                     WHERE wallet_id = ? AND polo_id IS NULL
                 ");
                 $checkStmt->execute([$walletId]);
             } else {
-                // Para registros de polo específico, verificar apenas no mesmo polo
                 $checkStmt = $this->pdo->prepare("
                     SELECT id, name, polo_id FROM wallet_ids 
                     WHERE wallet_id = ? AND polo_id = ?
@@ -89,34 +443,9 @@ class DatabaseManager {
             
             $existing = $checkStmt->fetch();
             
-            error_log("Resultado verificação: " . json_encode($existing));
-            
             if ($existing) {
-                error_log("ERRO: Encontrado registro existente no MESMO contexto");
-                error_log("Existing ID: {$existing['id']}, Nome: {$existing['name']}, Polo: " . ($existing['polo_id'] ?? 'NULL'));
-                
                 $contexto = $novoPoloId ? "no polo ID {$novoPoloId}" : "como registro global";
                 throw new Exception("Este Wallet ID já está cadastrado {$contexto}: {$existing['name']}");
-            }
-            
-            // LOG: Verificar se existe em outros polos (só para informação)
-            $allExistingStmt = $this->pdo->prepare("
-                SELECT id, name, polo_id, 
-                       CASE WHEN polo_id IS NULL THEN 'Global' ELSE CONCAT('Polo ', polo_id) END as polo_display
-                FROM wallet_ids 
-                WHERE wallet_id = ?
-            ");
-            $allExistingStmt->execute([$walletId]);
-            $allExisting = $allExistingStmt->fetchAll();
-            
-            error_log("Todos os registros existentes com este UUID: " . json_encode($allExisting));
-            
-            if (!empty($allExisting)) {
-                $existingInfo = [];
-                foreach ($allExisting as $record) {
-                    $existingInfo[] = "{$record['name']} ({$record['polo_display']})";
-                }
-                error_log("INFO: UUID já existe em: " . implode(', ', $existingInfo));
             }
             
             // INSERIR NOVO REGISTRO
@@ -134,37 +463,29 @@ class DatabaseManager {
                 $walletData['is_active'] ?? 1
             ];
             
-            error_log("Executando INSERT: " . json_encode($params));
-            
             $result = $stmt->execute($params);
             
             if ($result) {
-                $insertedId = $this->pdo->lastInsertId();
-                error_log("✅ SUCCESS: Wallet ID inserido - DB ID: {$insertedId}");
+                error_log("✅ SUCCESS: Wallet ID inserido");
                 error_log("=== FIM VERIFICAÇÃO WALLET ID ===");
                 return true;
             } else {
-                error_log("❌ ERRO: Falha na inserção");
-                return false;
+                throw new Exception("Falha na inserção");
             }
             
         } catch (PDOException $e) {
             error_log("❌ ERRO PDO: " . $e->getMessage());
-            error_log("Query state: " . json_encode($e->errorInfo ?? []));
             
             if (strpos($e->getMessage(), 'Duplicate entry') !== false) {
                 throw new Exception("Erro de chave duplicada no banco de dados");
             }
             
             throw new Exception("Erro do banco: " . $e->getMessage());
-        } catch (Exception $e) {
-            error_log("❌ ERRO GERAL: " . $e->getMessage());
-            throw $e;
         }
     }
     
     /**
-     * Buscar Wallet IDs do polo atual
+     * Buscar Wallet IDs do polo atual - MÉTODO MANTIDO
      */
     public function getActiveWalletIds($poloId = null) {
         try {
@@ -194,10 +515,9 @@ class DatabaseManager {
     }
     
     /**
-     * Salvar cliente com polo
+     * Salvar cliente com polo - MÉTODO MANTIDO
      */
     public function saveCustomer($customerData) {
-        // Se não especificar polo_id, usar o polo do usuário logado
         if (!isset($customerData['polo_id']) && isset($_SESSION['polo_id'])) {
             $customerData['polo_id'] = $_SESSION['polo_id'];
         }
@@ -225,58 +545,145 @@ class DatabaseManager {
     }
     
     /**
-     * Salvar pagamento com polo
+     * Salvar pagamento com polo - MÉTODO ATUALIZADO PARA SUPORTAR MENSALIDADES
      */
     public function savePayment($paymentData) {
-        // Se não especificar polo_id, usar o polo do usuário logado
-        if (!isset($paymentData['polo_id']) && isset($_SESSION['polo_id'])) {
-            $paymentData['polo_id'] = $_SESSION['polo_id'];
+        try {
+            if (!isset($paymentData['polo_id']) && isset($_SESSION['polo_id'])) {
+                $paymentData['polo_id'] = $_SESSION['polo_id'];
+            }
+            
+            $stmt = $this->pdo->prepare("
+                INSERT INTO payments (
+                    id, polo_id, customer_id, billing_type, status, value, 
+                    description, due_date, installment_count, installment_id, created_at
+                ) VALUES (
+                    :id, :polo_id, :customer_id, :billing_type, :status, :value, 
+                    :description, :due_date, :installment_count, :installment_id, NOW()
+                )
+                ON DUPLICATE KEY UPDATE 
+                    status = VALUES(status),
+                    updated_at = CURRENT_TIMESTAMP
+            ");
+            
+            $result = $stmt->execute([
+                'id' => $paymentData['id'],
+                'polo_id' => $paymentData['polo_id'],
+                'customer_id' => $paymentData['customer'],
+                'billing_type' => $paymentData['billingType'],
+                'status' => $paymentData['status'],
+                'value' => $paymentData['value'],
+                'description' => $paymentData['description'],
+                'due_date' => $paymentData['dueDate'],
+                'installment_count' => $paymentData['installmentCount'] ?? 1,
+                'installment_id' => $paymentData['installment'] ?? null
+            ]);
+            
+            // Se é parte de um parcelamento, salvar também na tabela específica
+            if (isset($paymentData['installment']) && $paymentData['installment']) {
+                $this->saveInstallmentPayment($paymentData['installment'], $paymentData);
+            }
+            
+            return $result;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao salvar pagamento: " . $e->getMessage());
+            return false;
         }
-        
-        $stmt = $this->pdo->prepare("
-            INSERT INTO payments (id, polo_id, customer_id, billing_type, status, value, description, due_date, installment_count) 
-            VALUES (:id, :polo_id, :customer_id, :billing_type, :status, :value, :description, :due_date, :installment_count)
-            ON DUPLICATE KEY UPDATE 
-                status = VALUES(status),
-                updated_at = CURRENT_TIMESTAMP
-        ");
-        
-        return $stmt->execute([
-            'id' => $paymentData['id'],
-            'polo_id' => $paymentData['polo_id'],
-            'customer_id' => $paymentData['customer'],
-            'billing_type' => $paymentData['billingType'],
-            'status' => $paymentData['status'],
-            'value' => $paymentData['value'],
-            'description' => $paymentData['description'],
-            'due_date' => $paymentData['dueDate'],
-            'installment_count' => $paymentData['installmentCount'] ?? 1
-        ]);
     }
     
     /**
-     * Buscar dados com filtro por polo
+     * Obter estatísticas com filtro por polo - MÉTODO ATUALIZADO COM MENSALIDADES
      */
-    private function addPoloFilter($query, $params = [], $poloId = null) {
+    public function getPoloFilteredStats($poloId = null) {
         if ($poloId === null && isset($_SESSION['polo_id'])) {
             $poloId = $_SESSION['polo_id'];
         }
         
-        if ($poloId && !isset($_SESSION['usuario_tipo']) || $_SESSION['usuario_tipo'] !== 'master') {
-            // Se não é master, filtrar por polo
-            if (strpos(strtolower($query), 'where') !== false) {
-                $query .= " AND polo_id = ?";
-            } else {
-                $query .= " WHERE polo_id = ?";
-            }
-            $params[] = $poloId;
-        }
+        $whereClause = $poloId ? 'WHERE polo_id = ?' : '';
+        $params = $poloId ? [$poloId] : [];
         
-        return ['query' => $query, 'params' => $params];
+        try {
+            // Estatísticas básicas
+            $stmt = $this->pdo->prepare("
+                SELECT 
+                    (SELECT COUNT(*) FROM customers {$whereClause}) as total_customers,
+                    (SELECT COUNT(*) FROM wallet_ids WHERE is_active = 1" . ($poloId ? " AND polo_id = ?" : "") . ") as total_wallet_ids,
+                    (SELECT COUNT(*) FROM payments {$whereClause}) as total_payments,
+                    (SELECT COUNT(*) FROM payments WHERE status = 'RECEIVED'" . ($poloId ? " AND polo_id = ?" : "") . ") as received_payments,
+                    (SELECT COALESCE(SUM(value), 0) FROM payments WHERE status = 'RECEIVED'" . ($poloId ? " AND polo_id = ?" : "") . ") as total_value
+            ");
+            
+            $execParams = [];
+            if ($poloId) {
+                $execParams = [$poloId, $poloId, $poloId, $poloId];
+            }
+            
+            $stmt->execute($execParams);
+            $stats = $stmt->fetch();
+            
+            // NOVAS ESTATÍSTICAS DE MENSALIDADES
+            $installmentStats = $this->getInstallmentStats($poloId);
+            
+            // Estatísticas de splits
+            $splitQuery = "
+                SELECT 
+                    COUNT(DISTINCT ps.wallet_id) as active_recipients,
+                    SUM(CASE 
+                        WHEN ps.split_type = 'FIXED' THEN ps.fixed_value 
+                        ELSE (p.value * ps.percentage_value / 100) 
+                    END) as total_split_value
+                FROM payment_splits ps
+                JOIN payments p ON ps.payment_id = p.id
+                WHERE p.status = 'RECEIVED'" . ($poloId ? " AND p.polo_id = ?" : "");
+                
+            $stmt = $this->pdo->prepare($splitQuery);
+            $stmt->execute($poloId ? [$poloId] : []);
+            $splitStats = $stmt->fetch();
+            
+            return [
+                'total_customers' => $stats['total_customers'],
+                'total_wallet_ids' => $stats['total_wallet_ids'],
+                'total_split_accounts' => 0,
+                'total_payments' => $stats['total_payments'],
+                'received_payments' => $stats['received_payments'],
+                'total_value' => $stats['total_value'],
+                'active_recipients' => $splitStats['active_recipients'] ?? 0,
+                'total_split_value' => $splitStats['total_split_value'] ?? 0,
+                'conversion_rate' => $stats['total_payments'] > 0 ? 
+                    round(($stats['received_payments'] / $stats['total_payments']) * 100, 2) : 0,
+                    
+                // NOVAS ESTATÍSTICAS DE MENSALIDADES
+                'total_installments' => $installmentStats['total_installments'],
+                'total_installment_value' => $installmentStats['total_value_expected'],
+                'active_installments' => $installmentStats['active_installments'],
+                'avg_installments_per_customer' => round($installmentStats['avg_installments_per_customer'], 1),
+                'installments_with_splits' => $installmentStats['installments_with_splits']
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Erro ao obter estatísticas: " . $e->getMessage());
+            return [
+                'total_customers' => 0,
+                'total_wallet_ids' => 0,
+                'total_split_accounts' => 0,
+                'total_payments' => 0,
+                'received_payments' => 0,
+                'total_value' => 0,
+                'active_recipients' => 0,
+                'total_split_value' => 0,
+                'conversion_rate' => 0,
+                'total_installments' => 0,
+                'total_installment_value' => 0,
+                'active_installments' => 0,
+                'avg_installments_per_customer' => 0,
+                'installments_with_splits' => 0
+            ];
+        }
     }
     
     /**
-     * Buscar relatório de splits com filtro por polo
+     * Buscar relatório de splits com filtro por polo - MÉTODO MANTIDO
      */
     public function getSplitReport($startDate, $endDate, $poloId = null) {
         $baseQuery = "
@@ -303,111 +710,111 @@ class DatabaseManager {
         
         $params = [$startDate, $endDate];
         
-        // Filtrar por polo se necessário
-        $filtered = $this->addPoloFilter($baseQuery, $params, $poloId);
+        if ($poloId !== null) {
+            $baseQuery .= " AND p.polo_id = ?";
+            $params[] = $poloId;
+        }
         
-        $filtered['query'] .= " GROUP BY ps.wallet_id ORDER BY total_received DESC";
+        $baseQuery .= " GROUP BY ps.wallet_id ORDER BY total_received DESC";
         
-        $stmt = $this->pdo->prepare($filtered['query']);
-        $stmt->execute($filtered['params']);
+        $stmt = $this->pdo->prepare($baseQuery);
+        $stmt->execute($params);
         
         return $stmt->fetchAll();
     }
     
-    // ... outros métodos existentes mantidos para compatibilidade
-    
     /**
-     * Obter estatísticas com filtro por polo
+     * NOVO: Relatório específico de mensalidades/parcelamentos
      */
-    public function getPoloFilteredStats($poloId = null) {
-        if ($poloId === null && isset($_SESSION['polo_id'])) {
-            $poloId = $_SESSION['polo_id'];
-        }
-        
-        $whereClause = $poloId ? 'WHERE polo_id = ?' : '';
-        $params = $poloId ? [$poloId] : [];
-        
+    public function getInstallmentReport($startDate, $endDate, $poloId = null) {
         try {
-            // Estatísticas básicas
-            $stmt = $this->pdo->prepare("
+            $query = "
                 SELECT 
-                    (SELECT COUNT(*) FROM customers {$whereClause}) as total_customers,
-                    (SELECT COUNT(*) FROM wallet_ids WHERE is_active = 1" . ($poloId ? " AND polo_id = ?" : "") . ") as total_wallet_ids,
-                    (SELECT COUNT(*) FROM payments {$whereClause}) as total_payments,
-                    (SELECT COUNT(*) FROM payments WHERE status = 'RECEIVED'" . ($poloId ? " AND polo_id = ?" : "") . ") as received_payments,
-                    (SELECT COALESCE(SUM(value), 0) FROM payments WHERE status = 'RECEIVED'" . ($poloId ? " AND polo_id = ?" : "") . ") as total_value
-            ");
+                    i.*,
+                    c.name as customer_name,
+                    c.email as customer_email,
+                    u.nome as created_by_name,
+                    COUNT(ip.id) as payments_made,
+                    SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END) as amount_received,
+                    (i.total_value - COALESCE(SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END), 0)) as amount_pending,
+                    ROUND((COALESCE(SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END), 0) / i.total_value) * 100, 2) as completion_percentage
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                LEFT JOIN usuarios u ON i.created_by = u.id
+                LEFT JOIN installment_payments ip ON i.installment_id = ip.installment_id
+                WHERE i.created_at BETWEEN ? AND ?
+            ";
             
-            $execParams = [];
-            if ($poloId) {
-                $execParams = [$poloId, $poloId, $poloId, $poloId]; // Um para cada subquery
+            $params = [$startDate, $endDate];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
             }
             
-            $stmt->execute($execParams);
-            $stats = $stmt->fetch();
+            $query .= " GROUP BY i.id ORDER BY i.created_at DESC";
             
-            // Estatísticas de splits
-            $splitQuery = "
-                SELECT 
-                    COUNT(DISTINCT ps.wallet_id) as active_recipients,
-                    SUM(CASE 
-                        WHEN ps.split_type = 'FIXED' THEN ps.fixed_value 
-                        ELSE (p.value * ps.percentage_value / 100) 
-                    END) as total_split_value
-                FROM payment_splits ps
-                JOIN payments p ON ps.payment_id = p.id
-                WHERE p.status = 'RECEIVED'" . ($poloId ? " AND p.polo_id = ?" : "");
-                
-            $stmt = $this->pdo->prepare($splitQuery);
-            $stmt->execute($poloId ? [$poloId] : []);
-            $splitStats = $stmt->fetch();
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
             
-            return [
-                'total_customers' => $stats['total_customers'],
-                'total_wallet_ids' => $stats['total_wallet_ids'],
-                'total_split_accounts' => 0, // Manter para compatibilidade
-                'total_payments' => $stats['total_payments'],
-                'received_payments' => $stats['received_payments'],
-                'total_value' => $stats['total_value'],
-                'active_recipients' => $splitStats['active_recipients'] ?? 0,
-                'total_split_value' => $splitStats['total_split_value'] ?? 0,
-                'conversion_rate' => $stats['total_payments'] > 0 ? 
-                    round(($stats['received_payments'] / $stats['total_payments']) * 100, 2) : 0
-            ];
+            return $stmt->fetchAll();
             
-        } catch (Exception $e) {
-            error_log("Erro ao obter estatísticas: " . $e->getMessage());
-            return [
-                'total_customers' => 0,
-                'total_wallet_ids' => 0,
-                'total_split_accounts' => 0,
-                'total_payments' => 0,
-                'received_payments' => 0,
-                'total_value' => 0,
-                'active_recipients' => 0,
-                'total_split_value' => 0,
-                'conversion_rate' => 0
-            ];
+        } catch (PDOException $e) {
+            error_log("Erro ao gerar relatório de parcelamentos: " . $e->getMessage());
+            return [];
         }
     }
     
     /**
-     * Limpar logs antigos (mantido)
+     * NOVO: Relatório de performance de mensalidades por cliente
      */
-    public function cleanOldLogs() {
-        $cutoffDate = date('Y-m-d', strtotime('-' . LOG_RETENTION_DAYS . ' days'));
-        
-        $stmt = $this->pdo->prepare("DELETE FROM webhook_logs WHERE processed_at < ?");
-        $stmt->execute([$cutoffDate]);
-        
-        return $stmt->rowCount();
+    public function getCustomerInstallmentPerformance($startDate, $endDate, $poloId = null) {
+        try {
+            $query = "
+                SELECT 
+                    c.name as customer_name,
+                    c.email as customer_email,
+                    COUNT(i.id) as total_installments,
+                    SUM(i.installment_count) as total_payments_expected,
+                    SUM(i.total_value) as total_value_expected,
+                    COUNT(ip.id) as total_payments_made,
+                    SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END) as total_amount_received,
+                    ROUND(
+                        (COUNT(ip.id) / NULLIF(SUM(i.installment_count), 0)) * 100, 2
+                    ) as payment_completion_rate,
+                    AVG(i.installment_value) as avg_installment_value
+                FROM customers c
+                JOIN installments i ON c.id = i.customer_id
+                LEFT JOIN installment_payments ip ON i.installment_id = ip.installment_id AND ip.status = 'RECEIVED'
+                WHERE i.created_at BETWEEN ? AND ?
+            ";
+            
+            $params = [$startDate, $endDate];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $query .= " GROUP BY c.id ORDER BY total_amount_received DESC";
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetchAll();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao gerar relatório de performance por cliente: " . $e->getMessage());
+            return [];
+        }
     }
     
-    // Métodos existentes mantidos para compatibilidade...
+    // ====================================================
+    // MÉTODOS EXISTENTES MANTIDOS
+    // ====================================================
+    
     public function saveSplitAccount($accountData) {
-        // Implementação existente mantida
         try {
-            // Se não especificar polo_id, usar o polo do usuário logado
             if (!isset($accountData['polo_id']) && isset($_SESSION['polo_id'])) {
                 $accountData['polo_id'] = $_SESSION['polo_id'];
             }
@@ -498,39 +905,222 @@ class DatabaseManager {
             $errorMessage
         ]);
     }
+    
+    /**
+     * Limpar logs antigos
+     */
+    public function cleanOldLogs() {
+        $cutoffDate = date('Y-m-d', strtotime('-' . LOG_RETENTION_DAYS . ' days'));
+        
+        $stmt = $this->pdo->prepare("DELETE FROM webhook_logs WHERE processed_at < ?");
+        $stmt->execute([$cutoffDate]);
+        
+        return $stmt->rowCount();
+    }
+    
+    /**
+     * NOVO: Verificar e criar estrutura completa do banco
+     */
+    public function ensureDatabaseStructure() {
+        try {
+            error_log("Verificando estrutura do banco de dados...");
+            
+            // Verificar se tabelas principais existem
+            $tables = [
+                'customers' => $this->createCustomersTable(),
+                'payments' => $this->createPaymentsTable(),
+                'wallet_ids' => $this->createWalletIdsTable(),
+                'payment_splits' => $this->createPaymentSplitsTable(),
+                'installments' => $this->createInstallmentsTable(),
+                'installment_payments' => $this->createInstallmentPaymentsTable(),
+                'webhook_logs' => $this->createWebhookLogsTable()
+            ];
+            
+            $created = 0;
+            foreach ($tables as $tableName => $result) {
+                if ($result) {
+                    $created++;
+                    error_log("Tabela {$tableName} verificada/criada");
+                }
+            }
+            
+            error_log("Estrutura do banco verificada - {$created} tabelas processadas");
+            return true;
+            
+        } catch (Exception $e) {
+            error_log("Erro ao verificar estrutura do banco: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela de clientes se não existir
+     */
+    private function createCustomersTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS customers (
+                id VARCHAR(100) PRIMARY KEY,
+                polo_id INT NULL,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                cpf_cnpj VARCHAR(20),
+                mobile_phone VARCHAR(20),
+                address TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_email (email),
+                INDEX idx_cpf_cnpj (cpf_cnpj)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            return true;
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela customers: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela de pagamentos se não existir - ATUALIZADA COM MENSALIDADES
+     */
+    private function createPaymentsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS payments (
+                id VARCHAR(100) PRIMARY KEY,
+                polo_id INT NULL,
+                customer_id VARCHAR(100),
+                billing_type VARCHAR(20),
+                status VARCHAR(20),
+                value DECIMAL(10,2),
+                description TEXT,
+                due_date DATE,
+                received_date DATETIME NULL,
+                installment_count INT DEFAULT 1,
+                installment_id VARCHAR(100) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_customer_id (customer_id),
+                INDEX idx_status (status),
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_due_date (due_date),
+                INDEX idx_received_date (received_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            return true;
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela payments: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela de wallet IDs se não existir
+     */
+    private function createWalletIdsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS wallet_ids (
+                id VARCHAR(100) PRIMARY KEY,
+                polo_id INT NULL,
+                wallet_id VARCHAR(100) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                UNIQUE KEY unique_wallet_polo (wallet_id, polo_id),
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_wallet_id (wallet_id),
+                INDEX idx_is_active (is_active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            return true;
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela wallet_ids: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela de splits se não existir
+     */
+    private function createPaymentSplitsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS payment_splits (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                payment_id VARCHAR(100) NOT NULL,
+                wallet_id VARCHAR(100) NOT NULL,
+                split_type ENUM('PERCENTAGE', 'FIXED') NOT NULL,
+                percentage_value DECIMAL(5,2) NULL,
+                fixed_value DECIMAL(10,2) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                INDEX idx_payment_id (payment_id),
+                INDEX idx_wallet_id (wallet_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            return true;
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela payment_splits: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Criar tabela de logs de webhook se não existir
+     */
+    private function createWebhookLogsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS webhook_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                event_type VARCHAR(50),
+                payment_id VARCHAR(100),
+                payload JSON,
+                status VARCHAR(20),
+                error_message TEXT,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                INDEX idx_event_type (event_type),
+                INDEX idx_payment_id (payment_id),
+                INDEX idx_processed_at (processed_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->pdo->exec($sql);
+            return true;
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela webhook_logs: " . $e->getMessage());
+            return false;
+        }
+    }
 }
 
 /**
- * Classe AsaasConfig adaptada para multi-tenant
+ * Classe AsaasConfig adaptada para multi-tenant - MANTIDA
  */
 class AsaasConfig {
     
-    /**
-     * Retorna instância configurada baseada no contexto do usuário
-     */
     public static function getInstance($environment = null, $poloId = null) {
-        // Verificar se há sistema de autenticação ativo
         if (isset($_SESSION['usuario_tipo'])) {
-            // Usar configuração dinâmica
             require_once 'config_manager.php';
             $dynamicConfig = new DynamicAsaasConfig();
             
             if ($poloId && $_SESSION['usuario_tipo'] === 'master') {
-                // Master pode acessar qualquer polo
                 return $dynamicConfig->getPoloInstance($poloId);
             } else {
-                // Usar configuração do contexto atual
                 return $dynamicConfig->getInstance();
             }
         }
         
-        // Fallback para configurações estáticas (compatibilidade)
         return self::getStaticInstance($environment);
     }
     
-    /**
-     * Configuração estática (compatibilidade com código existente)
-     */
     private static function getStaticInstance($environment = null) {
         if ($environment === null) {
             $environment = defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'sandbox';
@@ -553,23 +1143,18 @@ class AsaasConfig {
 }
 
 /**
- * Classe SystemStats adaptada para multi-tenant
+ * Classe SystemStats adaptada para multi-tenant + mensalidades - ATUALIZADA
  */
 class SystemStats {
     
-    /**
-     * Obter estatísticas baseadas no contexto do usuário
-     */
     public static function getGeneralStats($poloId = null) {
         try {
             $db = DatabaseManager::getInstance();
             
-            // Se há sistema de auth ativo, usar estatísticas filtradas
             if (isset($_SESSION['usuario_tipo']) && $_SESSION['usuario_tipo'] !== 'master') {
                 return $db->getPoloFilteredStats($_SESSION['polo_id']);
             }
             
-            // Master ou sistema sem auth: estatísticas globais
             return $db->getPoloFilteredStats($poloId);
             
         } catch (Exception $e) {
@@ -583,14 +1168,20 @@ class SystemStats {
                 'total_value' => 0,
                 'active_recipients' => 0,
                 'total_split_value' => 0,
-                'conversion_rate' => 0
+                'conversion_rate' => 0,
+                // NOVAS ESTATÍSTICAS DE MENSALIDADES
+                'total_installments' => 0,
+                'total_installment_value' => 0,
+                'active_installments' => 0,
+                'avg_installments_per_customer' => 0,
+                'installments_with_splits' => 0
             ];
         }
     }
 }
 
 /**
- * Classe WalletManager adaptada para multi-tenant
+ * Classe WalletManager adaptada para multi-tenant - MANTIDA E MELHORADA
  */
 class WalletManager {
     
@@ -600,11 +1191,7 @@ class WalletManager {
         $this->db = DatabaseManager::getInstance();
     }
     
-    /**
-     * Criar novo Wallet ID (com filtro por polo)
-     */
     public function createWallet($name, $walletId, $description = null, $poloId = null) {
-        // Se não especificar polo, usar o do usuário logado
         if ($poloId === null && isset($_SESSION['polo_id'])) {
             $poloId = $_SESSION['polo_id'];
         }
@@ -642,13 +1229,9 @@ class WalletManager {
         }
     }
     
-    /**
-     * Listar Wallet IDs (filtrado por polo)
-     */
     public function listWallets($page = 1, $limit = 20, $search = null, $poloId = null) {
         $offset = ($page - 1) * $limit;
         
-        // Se não especificar polo, usar o do usuário logado
         if ($poloId === null && isset($_SESSION['polo_id'])) {
             $poloId = $_SESSION['polo_id'];
         }
@@ -682,7 +1265,26 @@ class WalletManager {
         return $stmt->fetchAll();
     }
     
-    // Outros métodos existentes mantidos...
+    public function getWalletWithStats($walletId) {
+        $stmt = $this->db->getConnection()->prepare("
+            SELECT wi.*, 
+                   COUNT(ps.id) as usage_count,
+                   COALESCE(SUM(
+                       CASE WHEN ps.split_type = 'FIXED' THEN ps.fixed_value 
+                       ELSE (p.value * ps.percentage_value / 100) END
+                   ), 0) as total_earned
+            FROM wallet_ids wi
+            LEFT JOIN payment_splits ps ON wi.wallet_id = ps.wallet_id
+            LEFT JOIN payments p ON ps.payment_id = p.id AND p.status = 'RECEIVED'
+            WHERE wi.wallet_id = ?
+            GROUP BY wi.id
+        ");
+        
+        $stmt->execute([$walletId]);
+        return $stmt->fetch();
+    }
+    
+    // Outros métodos mantidos...
     public function toggleStatus($walletId) {
         $stmt = $this->db->getConnection()->prepare("
             UPDATE wallet_ids 
@@ -694,7 +1296,6 @@ class WalletManager {
     }
     
     public function deleteWallet($walletId) {
-        // Verificar se tem splits associados
         $stmt = $this->db->getConnection()->prepare("
             SELECT COUNT(*) as count FROM payment_splits WHERE wallet_id = ?
         ");
@@ -710,30 +1311,218 @@ class WalletManager {
     }
 }
 
-// Funções de utilidade para migração/instalação
-function updateSystemForMultiTenant() {
+/**
+ * NOVA CLASSE: InstallmentManager - Gerenciador de Mensalidades
+ */
+class InstallmentManager {
+    
+    private $db;
+    private $asaas;
+    
+    public function __construct() {
+        $this->db = DatabaseManager::getInstance();
+    }
+    
+    /**
+     * Inicializar conexão com ASAAS baseada no contexto
+     */
+    private function initAsaas() {
+        if ($this->asaas === null) {
+            $this->asaas = AsaasConfig::getInstance();
+        }
+        return $this->asaas;
+    }
+    
+    /**
+     * Criar nova mensalidade parcelada
+     */
+    public function createInstallment($paymentData, $splitsData, $installmentData) {
+        try {
+            $asaas = $this->initAsaas();
+            
+            // Validar dados
+            $this->validateInstallmentData($installmentData);
+            
+            // Criar parcelamento via API ASAAS
+            $result = $asaas->createInstallmentPaymentWithSplit($paymentData, $splitsData, $installmentData);
+            
+            // Salvar informações locais
+            $installmentRecord = [
+                'installment_id' => $result['installment'],
+                'polo_id' => $_SESSION['polo_id'] ?? null,
+                'customer_id' => $result['customer'],
+                'installment_count' => $installmentData['installmentCount'],
+                'installment_value' => $installmentData['installmentValue'],
+                'total_value' => $installmentData['installmentCount'] * $installmentData['installmentValue'],
+                'first_due_date' => $paymentData['dueDate'],
+                'billing_type' => $paymentData['billingType'],
+                'description' => $paymentData['description'],
+                'has_splits' => !empty($splitsData),
+                'splits_count' => count($splitsData),
+                'created_by' => $_SESSION['usuario_id'] ?? null,
+                'first_payment_id' => $result['id']
+            ];
+            
+            $this->db->saveInstallmentRecord($installmentRecord);
+            
+            // Salvar splits se houver
+            if (!empty($splitsData)) {
+                $this->db->savePaymentSplits($result['id'], $splitsData);
+            }
+            
+            return [
+                'success' => true,
+                'data' => $result,
+                'installment_record' => $installmentRecord
+            ];
+            
+        } catch (Exception $e) {
+            error_log("Erro ao criar mensalidade: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Validar dados de parcelamento
+     */
+    private function validateInstallmentData($installmentData) {
+        $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
+        $installmentValue = (float)($installmentData['installmentValue'] ?? 0);
+        
+        if ($installmentCount < MIN_INSTALLMENTS || $installmentCount > MAX_INSTALLMENTS) {
+            throw new Exception("Número de parcelas deve ser entre " . MIN_INSTALLMENTS . " e " . MAX_INSTALLMENTS);
+        }
+        
+        if ($installmentValue < MIN_INSTALLMENT_VALUE || $installmentValue > MAX_INSTALLMENT_VALUE) {
+            throw new Exception("Valor da parcela deve ser entre R$ " . number_format(MIN_INSTALLMENT_VALUE, 2, ',', '.') . 
+                              " e R$ " . number_format(MAX_INSTALLMENT_VALUE, 2, ',', '.'));
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Obter todas as parcelas de uma mensalidade
+     */
+    public function getInstallmentPayments($installmentId) {
+        try {
+            $asaas = $this->initAsaas();
+            return $asaas->getInstallmentPayments($installmentId);
+        } catch (Exception $e) {
+            error_log("Erro ao buscar parcelas: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Gerar carnê em PDF
+     */
+    public function generatePaymentBook($installmentId) {
+        try {
+            $asaas = $this->initAsaas();
+            return $asaas->generateInstallmentPaymentBook($installmentId);
+        } catch (Exception $e) {
+            error_log("Erro ao gerar carnê: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Obter relatório de mensalidades
+     */
+    public function getInstallmentReport($startDate, $endDate, $poloId = null) {
+        try {
+            return $this->db->getInstallmentReport($startDate, $endDate, $poloId);
+        } catch (Exception $e) {
+            error_log("Erro ao gerar relatório de mensalidades: " . $e->getMessage());
+            throw $e;
+        }
+    }
+    
+    /**
+     * Atualizar status de uma mensalidade
+     */
+    public function updateInstallmentStatus($installmentId, $status) {
+        try {
+            $stmt = $this->db->getConnection()->prepare("
+                UPDATE installments 
+                SET status = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE installment_id = ?
+            ");
+            
+            return $stmt->execute([$status, $installmentId]);
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao atualizar status da mensalidade: " . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+// Funções de utilidade para migração/instalação - ATUALIZADAS
+function updateSystemForInstallments() {
     try {
         $db = DatabaseManager::getInstance();
-        $connection = $db->getConnection();
         
-        echo "🔄 Atualizando sistema para multi-tenant...\n";
+        echo "🔄 Atualizando sistema para suporte a mensalidades...\n";
         
-        // Verificar e adicionar colunas polo_id se necessário
-        $tabelas = ['customers', 'split_accounts', 'payments', 'wallet_ids'];
+        // Verificar e criar estrutura completa
+        if ($db->ensureDatabaseStructure()) {
+            echo "✅ Estrutura do banco verificada/criada\n";
+        } else {
+            echo "❌ Erro ao verificar estrutura do banco\n";
+            return false;
+        }
         
-        foreach ($tabelas as $tabela) {
-            $result = $connection->query("SHOW TABLES LIKE '{$tabela}'");
-            if ($result->rowCount() > 0) {
-                $result = $connection->query("SHOW COLUMNS FROM {$tabela} LIKE 'polo_id'");
-                if ($result->rowCount() == 0) {
-                    $connection->exec("ALTER TABLE {$tabela} ADD COLUMN polo_id INT NULL AFTER id");
-                    $connection->exec("ALTER TABLE {$tabela} ADD INDEX idx_polo (polo_id)");
-                    echo "  ✅ Coluna polo_id adicionada à tabela {$tabela}\n";
+        // Verificar se colunas necessárias existem nas tabelas existentes
+        $updates = [
+            'payments' => [
+                'installment_count' => "ALTER TABLE payments ADD COLUMN installment_count INT DEFAULT 1",
+                'installment_id' => "ALTER TABLE payments ADD COLUMN installment_id VARCHAR(100) NULL",
+            ],
+            'wallet_ids' => [
+                'polo_id' => "ALTER TABLE wallet_ids ADD COLUMN polo_id INT NULL"
+            ]
+        ];
+        
+        foreach ($updates as $table => $columns) {
+            foreach ($columns as $column => $sql) {
+                try {
+                    // Verificar se coluna já existe
+                    $check = $db->getConnection()->query("SHOW COLUMNS FROM {$table} LIKE '{$column}'");
+                    if ($check->rowCount() == 0) {
+                        $db->getConnection()->exec($sql);
+                        echo "  ✅ Coluna {$column} adicionada à tabela {$table}\n";
+                    }
+                } catch (Exception $e) {
+                    echo "  ⚠️ Erro ao adicionar coluna {$column} em {$table}: " . $e->getMessage() . "\n";
                 }
             }
         }
         
-        echo "✅ Sistema atualizado para multi-tenant\n";
+        // Criar índices necessários se não existirem
+        $indexes = [
+            'payments' => [
+                'idx_installment_id' => "CREATE INDEX idx_installment_id ON payments (installment_id)",
+                'idx_received_date' => "CREATE INDEX idx_received_date ON payments (received_date)"
+            ]
+        ];
+        
+        foreach ($indexes as $table => $indexList) {
+            foreach ($indexList as $indexName => $sql) {
+                try {
+                    $db->getConnection()->exec($sql);
+                    echo "  ✅ Índice {$indexName} criado em {$table}\n";
+                } catch (Exception $e) {
+                    // Ignora erro se índice já existe
+                    if (strpos($e->getMessage(), 'Duplicate key name') === false) {
+                        echo "  ⚠️ Aviso ao criar índice {$indexName}: " . $e->getMessage() . "\n";
+                    }
+                }
+            }
+        }
+        
+        echo "✅ Sistema atualizado para suporte a mensalidades\n";
         return true;
         
     } catch (Exception $e) {
@@ -742,12 +1531,214 @@ function updateSystemForMultiTenant() {
     }
 }
 
+function checkInstallmentSystemHealth() {
+    try {
+        echo "🔍 Verificando saúde do sistema de mensalidades...\n";
+        
+        $db = DatabaseManager::getInstance();
+        $issues = [];
+        
+        // Verificar tabelas necessárias
+        $requiredTables = [
+            'installments' => 'Tabela principal de mensalidades',
+            'installment_payments' => 'Tabela de parcelas individuais',
+            'payments' => 'Tabela de pagamentos (com suporte a parcelamento)',
+            'wallet_ids' => 'Tabela de Wallet IDs',
+            'customers' => 'Tabela de clientes'
+        ];
+        
+        foreach ($requiredTables as $table => $description) {
+            try {
+                $result = $db->getConnection()->query("SELECT COUNT(*) FROM {$table}");
+                $count = $result->fetchColumn();
+                echo "  ✅ {$description}: {$count} registros\n";
+            } catch (Exception $e) {
+                $issues[] = "Tabela {$table} não existe ou está inacessível";
+                echo "  ❌ {$description}: ERRO\n";
+            }
+        }
+        
+        // Verificar constantes de configuração
+        $requiredConstants = [
+            'MAX_INSTALLMENTS' => MAX_INSTALLMENTS,
+            'MIN_INSTALLMENTS' => MIN_INSTALLMENTS,
+            'MIN_INSTALLMENT_VALUE' => MIN_INSTALLMENT_VALUE,
+            'MAX_INSTALLMENT_VALUE' => MAX_INSTALLMENT_VALUE
+        ];
+        
+        echo "\n📋 Configurações de mensalidade:\n";
+        foreach ($requiredConstants as $const => $value) {
+            echo "  • {$const}: {$value}\n";
+        }
+        
+        // Verificar funcionalidade do InstallmentManager
+        try {
+            $manager = new InstallmentManager();
+            echo "  ✅ InstallmentManager: Funcional\n";
+        } catch (Exception $e) {
+            $issues[] = "InstallmentManager não está funcionando: " . $e->getMessage();
+            echo "  ❌ InstallmentManager: ERRO\n";
+        }
+        
+        // Verificar funcionalidade de relatórios
+        try {
+            $stats = $db->getInstallmentStats();
+            echo "  ✅ Relatórios de mensalidade: Funcional\n";
+            echo "    - Total de mensalidades: " . ($stats['total_installments'] ?? 0) . "\n";
+            echo "    - Valor total esperado: R$ " . number_format($stats['total_value_expected'] ?? 0, 2, ',', '.') . "\n";
+        } catch (Exception $e) {
+            $issues[] = "Relatórios de mensalidade não estão funcionando: " . $e->getMessage();
+            echo "  ❌ Relatórios: ERRO\n";
+        }
+        
+        if (empty($issues)) {
+            echo "\n🎉 Sistema de mensalidades está funcionando perfeitamente!\n";
+            return true;
+        } else {
+            echo "\n⚠️ Problemas encontrados:\n";
+            foreach ($issues as $issue) {
+                echo "  • {$issue}\n";
+            }
+            return false;
+        }
+        
+    } catch (Exception $e) {
+        echo "❌ Erro na verificação: " . $e->getMessage() . "\n";
+        return false;
+    }
+}
+
+function generateInstallmentTestData() {
+    try {
+        echo "🧪 Gerando dados de teste para mensalidades...\n";
+        
+        $db = DatabaseManager::getInstance();
+        
+        // Verificar se já existem dados
+        $stmt = $db->getConnection()->query("SELECT COUNT(*) FROM installments");
+        $existingCount = $stmt->fetchColumn();
+        
+        if ($existingCount > 0) {
+            echo "ℹ️ Já existem {$existingCount} mensalidades no sistema\n";
+            if (!confirm("Deseja continuar adicionando dados de teste?")) {
+                return false;
+            }
+        }
+        
+        // Dados de teste
+        $testData = [
+            [
+                'installment_id' => 'test_inst_' . uniqid(),
+                'polo_id' => 1,
+                'customer_id' => 'test_customer_1',
+                'installment_count' => 12,
+                'installment_value' => 100.00,
+                'total_value' => 1200.00,
+                'first_due_date' => date('Y-m-d', strtotime('+1 month')),
+                'billing_type' => 'BOLETO',
+                'description' => 'Mensalidade Teste - Curso Técnico',
+                'has_splits' => true,
+                'splits_count' => 2,
+                'created_by' => 1,
+                'first_payment_id' => 'test_payment_1'
+            ],
+            [
+                'installment_id' => 'test_inst_' . uniqid(),
+                'polo_id' => 1,
+                'customer_id' => 'test_customer_2',
+                'installment_count' => 24,
+                'installment_value' => 150.00,
+                'total_value' => 3600.00,
+                'first_due_date' => date('Y-m-d', strtotime('+2 weeks')),
+                'billing_type' => 'PIX',
+                'description' => 'Mensalidade Teste - Curso Superior',
+                'has_splits' => false,
+                'splits_count' => 0,
+                'created_by' => 1,
+                'first_payment_id' => 'test_payment_2'
+            ]
+        ];
+        
+        $created = 0;
+        foreach ($testData as $data) {
+            try {
+                $db->saveInstallmentRecord($data);
+                $created++;
+                echo "  ✅ Mensalidade teste criada: {$data['description']}\n";
+            } catch (Exception $e) {
+                echo "  ❌ Erro ao criar mensalidade teste: " . $e->getMessage() . "\n";
+            }
+        }
+        
+        echo "✅ {$created} mensalidades de teste criadas\n";
+        return true;
+        
+    } catch (Exception $e) {
+        echo "❌ Erro ao gerar dados de teste: " . $e->getMessage() . "\n";
+        return false;
+    }
+}
+
+function confirm($message) {
+    echo $message . " (s/N): ";
+    $handle = fopen("php://stdin", "r");
+    $line = fgets($handle);
+    fclose($handle);
+    return strtolower(trim($line)) === 's';
+}
+
 // Executar comandos via linha de comando
 if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($_SERVER['SCRIPT_NAME'])) {
     
     $command = isset($argv[1]) ? $argv[1] : '';
     
     switch ($command) {
+        case 'update-installments':
+            updateSystemForInstallments();
+            break;
+            
+        case 'health-check':
+            checkInstallmentSystemHealth();
+            break;
+            
+        case 'test-data':
+            generateInstallmentTestData();
+            break;
+            
+        case 'create-tables':
+            try {
+                $db = DatabaseManager::getInstance();
+                if ($db->ensureDatabaseStructure()) {
+                    echo "✅ Todas as tabelas foram criadas/verificadas\n";
+                } else {
+                    echo "❌ Erro ao criar/verificar tabelas\n";
+                }
+            } catch (Exception $e) {
+                echo "❌ Erro: " . $e->getMessage() . "\n";
+            }
+            break;
+            
+        case 'stats':
+            try {
+                $db = DatabaseManager::getInstance();
+                $stats = $db->getInstallmentStats();
+                
+                echo "📊 Estatísticas do Sistema de Mensalidades:\n";
+                echo "=========================================\n";
+                echo "Total de mensalidades: " . $stats['total_installments'] . "\n";
+                echo "Total de parcelas esperadas: " . $stats['total_payments_expected'] . "\n";
+                echo "Valor total esperado: R$ " . number_format($stats['total_value_expected'], 2, ',', '.') . "\n";
+                echo "Média de parcelas por mensalidade: " . round($stats['avg_installments_per_customer'], 1) . "\n";
+                echo "Valor médio por parcela: R$ " . number_format($stats['avg_installment_value'], 2, ',', '.') . "\n";
+                echo "Mensalidades ativas: " . $stats['active_installments'] . "\n";
+                echo "Mensalidades concluídas: " . $stats['completed_installments'] . "\n";
+                echo "Mensalidades com splits: " . $stats['installments_with_splits'] . "\n";
+                
+            } catch (Exception $e) {
+                echo "❌ Erro ao obter estatísticas: " . $e->getMessage() . "\n";
+            }
+            break;
+            
         case 'update-multitenant':
             updateSystemForMultiTenant();
             break;
@@ -763,14 +1754,209 @@ if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($_SERVER['SCRIP
             break;
             
         default:
-            echo "Sistema de Split ASAAS Multi-Tenant v2.1\n";
-            echo "=========================================\n\n";
+            echo "Sistema de Split ASAAS Multi-Tenant + Mensalidades v3.3\n";
+            echo "=====================================================\n\n";
             echo "Comandos disponíveis:\n";
+            echo "  update-installments  - Atualizar sistema para mensalidades\n";
+            echo "  health-check        - Verificar saúde do sistema de mensalidades\n";
+            echo "  test-data           - Gerar dados de teste para mensalidades\n";
+            echo "  create-tables       - Criar/verificar todas as tabelas\n";
+            echo "  stats              - Mostrar estatísticas de mensalidades\n";
             echo "  update-multitenant  - Atualizar sistema para multi-tenant\n";
-            echo "  test-auth          - Testar sistema de autenticação\n";
-            echo "  install            - Instalar sistema completo\n";
-            echo "  health-check       - Verificar saúde do sistema\n\n";
-            echo "Novo: Sistema com suporte a múltiplos polos!\n";
+            echo "  test-auth          - Testar sistema de autenticação\n\n";
+            echo "🆕 Novo: Sistema com suporte a mensalidades parceladas!\n";
+            echo "💳 Funcionalidades:\n";
+            echo "  • Mensalidades de 2 a 24 parcelas\n";
+            echo "  • Splits automáticos em todas as parcelas\n";
+            echo "  • Geração de carnês em PDF\n";
+            echo "  • Relatórios detalhados de mensalidades\n";
+            echo "  • Controle multi-tenant por polo\n";
             break;
     }
 }
+
+// Função para atualização automática ao incluir o arquivo
+function autoUpdateSystemIfNeeded() {
+    try {
+        $db = DatabaseManager::getInstance();
+        
+        // Verificar se tabela de installments existe
+        $result = $db->getConnection()->query("SHOW TABLES LIKE 'installments'");
+        if ($result->rowCount() == 0) {
+            error_log("Tabela installments não existe, criando automaticamente...");
+            $db->createInstallmentsTable();
+            error_log("Sistema de mensalidades configurado automaticamente");
+        }
+        
+        return true;
+    } catch (Exception $e) {
+        error_log("Erro na atualização automática: " . $e->getMessage());
+        return false;
+    }
+}
+
+// Executar atualização automática quando arquivo for incluído
+if (!defined('SKIP_AUTO_UPDATE')) {
+    autoUpdateSystemIfNeeded();
+}
+
+/**
+ * Classe para validação de dados de mensalidade
+ */
+class InstallmentValidator {
+    
+    public static function validateInstallmentData($data) {
+        $errors = [];
+        
+        // Validar número de parcelas
+        $installmentCount = (int)($data['installmentCount'] ?? 0);
+        if ($installmentCount < MIN_INSTALLMENTS) {
+            $errors[] = 'Número mínimo de parcelas é ' . MIN_INSTALLMENTS;
+        }
+        if ($installmentCount > MAX_INSTALLMENTS) {
+            $errors[] = 'Número máximo de parcelas é ' . MAX_INSTALLMENTS;
+        }
+        
+        // Validar valor da parcela
+        $installmentValue = (float)($data['installmentValue'] ?? 0);
+        if ($installmentValue < MIN_INSTALLMENT_VALUE) {
+            $errors[] = 'Valor mínimo da parcela é R$ ' . number_format(MIN_INSTALLMENT_VALUE, 2, ',', '.');
+        }
+        if ($installmentValue > MAX_INSTALLMENT_VALUE) {
+            $errors[] = 'Valor máximo da parcela é R$ ' . number_format(MAX_INSTALLMENT_VALUE, 2, ',', '.');
+        }
+        
+        // Validar data de vencimento
+        if (empty($data['dueDate'])) {
+            $errors[] = 'Data de vencimento é obrigatória';
+        } else {
+            $dueDate = strtotime($data['dueDate']);
+            if ($dueDate < strtotime('today')) {
+                $errors[] = 'Data de vencimento não pode ser anterior a hoje';
+            }
+            
+            // Não pode ser muito distante (máximo 1 ano)
+            $maxDate = strtotime('+1 year');
+            if ($dueDate > $maxDate) {
+                $errors[] = 'Data de vencimento muito distante (máximo 1 ano)';
+            }
+        }
+        
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors
+        ];
+    }
+    
+    public static function validateSplitsData($splits, $installmentValue) {
+        $errors = [];
+        $totalPercentage = 0;
+        $totalFixedValue = 0;
+        
+        foreach ($splits as $split) {
+            if (empty($split['walletId'])) {
+                continue; // Split vazio, ignorar
+            }
+            
+            if (!empty($split['percentualValue'])) {
+                $percentage = floatval($split['percentualValue']);
+                if ($percentage <= 0 || $percentage > 100) {
+                    $errors[] = 'Percentual deve ser entre 0.01% e 100%';
+                }
+                $totalPercentage += $percentage;
+            }
+            
+            if (!empty($split['fixedValue'])) {
+                $fixedValue = floatval($split['fixedValue']);
+                if ($fixedValue <= 0) {
+                    $errors[] = 'Valor fixo deve ser maior que zero';
+                }
+                if ($fixedValue >= $installmentValue) {
+                    $errors[] = 'Valor fixo não pode ser maior ou igual ao valor da parcela';
+                }
+                $totalFixedValue += $fixedValue;
+            }
+        }
+        
+        if ($totalPercentage > 100) {
+            $errors[] = 'A soma dos percentuais não pode exceder 100%';
+        }
+        
+        if ($totalFixedValue >= $installmentValue) {
+            $errors[] = 'A soma dos valores fixos não pode ser maior ou igual ao valor da parcela';
+        }
+        
+        return [
+            'valid' => empty($errors),
+            'errors' => $errors,
+            'total_percentage' => $totalPercentage,
+            'total_fixed_value' => $totalFixedValue
+        ];
+    }
+}
+
+/**
+ * Classe utilitária para formatação de mensalidades
+ */
+class InstallmentFormatter {
+    
+    public static function formatInstallmentSummary($installmentData) {
+        return [
+            'parcelas' => $installmentData['installment_count'] . 'x',
+            'valor_parcela' => 'R$ ' . number_format($installmentData['installment_value'], 2, ',', '.'),
+            'valor_total' => 'R$ ' . number_format($installmentData['total_value'], 2, ',', '.'),
+            'primeiro_vencimento' => date('d/m/Y', strtotime($installmentData['first_due_date'])),
+            'tipo_cobranca' => $installmentData['billing_type'],
+            'status_formatado' => self::getStatusLabel($installmentData['status'] ?? 'ACTIVE'),
+            'progresso' => self::calculateProgress($installmentData)
+        ];
+    }
+    
+    public static function getStatusLabel($status) {
+        $labels = [
+            'ACTIVE' => 'Ativa',
+            'COMPLETED' => 'Concluída',
+            'CANCELLED' => 'Cancelada',
+            'PENDING' => 'Pendente'
+        ];
+        
+        return $labels[$status] ?? $status;
+    }
+    
+    public static function calculateProgress($installmentData) {
+        $paymentsReceived = $installmentData['payments_received'] ?? 0;
+        $totalPayments = $installmentData['installment_count'] ?? 1;
+        
+        $percentage = $totalPayments > 0 ? ($paymentsReceived / $totalPayments) * 100 : 0;
+        
+        return [
+            'percentage' => round($percentage, 1),
+            'received' => $paymentsReceived,
+            'total' => $totalPayments,
+            'remaining' => $totalPayments - $paymentsReceived
+        ];
+    }
+    
+    public static function generateDueDatesPreview($firstDate, $installmentCount) {
+        $dates = [];
+        $currentDate = new DateTime($firstDate);
+        
+        for ($i = 0; $i < min($installmentCount, 6); $i++) {
+            $dates[] = [
+                'parcela' => $i + 1,
+                'data' => $currentDate->format('d/m/Y'),
+                'data_iso' => $currentDate->format('Y-m-d'),
+                'mes_ano' => $currentDate->format('m/Y')
+            ];
+            
+            $currentDate->add(new DateInterval('P1M'));
+        }
+        
+        return $dates;
+    }
+}
+
+// Log de inicialização do sistema de mensalidades
+error_log("Sistema de mensalidades carregado - v3.3");
+error_log("Constantes: MAX_INSTALLMENTS=" . MAX_INSTALLMENTS . ", MIN_INSTALLMENTS=" . MIN_INSTALLMENTS);
+?>
