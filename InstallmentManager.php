@@ -107,23 +107,34 @@ class InstallmentManager {
                 $this->validateSplitsData($splitsData, $installmentData['installmentValue']);
             }
             
-            // ===== VALIDAÇÃO DO DESCONTO =====
+            // ===== VALIDAÇÃO E CONFIGURAÇÃO DO DESCONTO =====
             $discountData = [];
             if (!empty($installmentData['discount_value']) && $installmentData['discount_value'] > 0) {
                 $discountData = $this->validateAndPrepareDiscount($installmentData);
                 $this->log("Desconto configurado via installmentData: R$ {$discountData['value']} até o vencimento");
+                
+                // ===== CORREÇÃO PRINCIPAL: ADICIONAR DESCONTO AO PAYMENTDATA =====
+                $paymentData['discount'] = [
+                    'value' => $discountData['value'],
+                    'dueDateLimitDays' => 0,  // Válido até o vencimento
+                    'type' => 'FIXED'
+                ];
+                
+                $this->log("✅ DESCONTO ADICIONADO AO PAYMENTDATA: " . json_encode($paymentData['discount']));
             }
             
-            // ===== VERIFICAR SE DESCONTO JÁ ESTÁ NO PAYMENTDATA =====
+            // ===== VERIFICAR SE DESCONTO JÁ ESTÁ NO PAYMENTDATA (vindo da interface) =====
             if (isset($paymentData['discount']) && $paymentData['discount']['value'] > 0) {
                 $this->log("Desconto já configurado no paymentData: R$ {$paymentData['discount']['value']}");
+            } else {
+                $this->log("❌ NENHUM DESCONTO CONFIGURADO");
             }
             
             // Inicializar ASAAS
             $asaas = $this->initAsaas();
             
             // ===== LOG ANTES DE CHAMAR ASAAS =====
-            $this->log("Chamando ASAAS com PaymentData: " . json_encode($paymentData));
+            $this->log("Chamando ASAAS com PaymentData FINAL: " . json_encode($paymentData));
             $this->log("Splits: " . json_encode($splitsData));
             $this->log("InstallmentData: " . json_encode($installmentData));
             

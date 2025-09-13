@@ -2482,54 +2482,76 @@ function getStatusIcon($status) {
         /**
          * Validar entrada do desconto em tempo real
          */
-        function validateDiscountInput() {
-            const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
-            const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
-            const validationDiv = document.getElementById('discount-validation');
-            const discountPreview = document.getElementById('discount-preview');
-            
-            if (!discountEnabled || discountValue <= 0 || installmentValue <= 0) {
-                hideDiscountPreview();
-                if (validationDiv) validationDiv.style.display = 'none';
-                return;
-            }
-            
-            // Validação usando configuração do sistema
-            const maxDiscountPercentage = SystemConfig.discount_config.max_percentage;
-            const maxDiscountValue = installmentValue * (maxDiscountPercentage / 100);
-            const discountPercentage = (discountValue / installmentValue) * 100;
-            
-            let validationHTML = '';
-            let isValid = true;
-            
-            // Validações
-            if (discountValue >= installmentValue) {
-                validationHTML += '<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto não pode ser maior ou igual ao valor da parcela</small></div>';
-                isValid = false;
-            } else if (discountValue > maxDiscountValue) {
-                validationHTML += `<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto máximo: R$ ${maxDiscountValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})} (${maxDiscountPercentage}% da parcela)</small></div>`;
-                isValid = false;
-            } else if (discountPercentage > 30) {
-                validationHTML += `<div class="alert alert-warning py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto alto (${discountPercentage.toFixed(1)}% da parcela). Pode impactar a receita.</small></div>`;
-            } else if (discountPercentage < 5 && discountValue > 0) {
-                validationHTML += `<div class="alert alert-info py-2 mb-2"><small><i class="bi bi-info-circle me-1"></i>Desconto baixo (${discountPercentage.toFixed(1)}%) pode ter pouco impacto na conversão.</small></div>`;
-            }
-            
-            if (validationDiv) {
-                validationDiv.innerHTML = validationHTML;
-                validationDiv.style.display = validationHTML ? 'block' : 'none';
-            }
-            
-            // Atualizar preview se válido
-            if (isValid && discountValue > 0) {
-                updateDiscountPreview(discountValue, installmentValue);
-                if (discountPreview) discountPreview.style.display = 'block';
-            } else {
-                hideDiscountPreview();
-            }
-            
-            return isValid;
+// Melhorar a função validateDiscountInput para mostrar o estado atual
+function validateDiscountInput() {
+    const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
+    const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
+    const validationDiv = document.getElementById('discount-validation');
+    const discountPreview = document.getElementById('discount-preview');
+    
+    console.log('🔍 Validando desconto:', {
+        discountValue,
+        installmentValue,
+        discountEnabled,
+        ratio: installmentValue > 0 ? (discountValue / installmentValue * 100).toFixed(1) + '%' : '0%'
+    });
+    
+    if (!discountEnabled || discountValue <= 0 || installmentValue <= 0) {
+        hideDiscountPreview();
+        if (validationDiv) validationDiv.style.display = 'none';
+        return false;
+    }
+    
+    // Validação usando configuração do sistema
+    const maxDiscountPercentage = SystemConfig.discount_config.max_percentage;
+    const maxDiscountValue = installmentValue * (maxDiscountPercentage / 100);
+    const discountPercentage = (discountValue / installmentValue) * 100;
+    
+    let validationHTML = '';
+    let isValid = true;
+    
+    // Validações
+    if (discountValue >= installmentValue) {
+        validationHTML += '<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto não pode ser maior ou igual ao valor da parcela</small></div>';
+        isValid = false;
+    } else if (discountValue > maxDiscountValue) {
+        validationHTML += `<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto máximo: R$ ${maxDiscountValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})} (${maxDiscountPercentage}% da parcela)</small></div>`;
+        isValid = false;
+    } else if (discountPercentage > 30) {
+        validationHTML += `<div class="alert alert-warning py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto alto (${discountPercentage.toFixed(1)}% da parcela). Pode impactar a receita.</small></div>`;
+    } else if (discountPercentage < 5 && discountValue > 0) {
+        validationHTML += `<div class="alert alert-info py-2 mb-2"><small><i class="bi bi-info-circle me-1"></i>Desconto baixo (${discountPercentage.toFixed(1)}%) pode ter pouco impacto na conversão.</small></div>`;
+    }
+    
+    if (validationDiv) {
+        validationDiv.innerHTML = validationHTML;
+        validationDiv.style.display = validationHTML ? 'block' : 'none';
+    }
+    
+    // Atualizar preview se válido
+    if (isValid && discountValue > 0) {
+        updateDiscountPreview(discountValue, installmentValue);
+        if (discountPreview) discountPreview.style.display = 'block';
+        
+        console.log('✅ Desconto válido:', {
+            value: discountValue,
+            percentage: discountPercentage.toFixed(1) + '%',
+            maxAllowed: maxDiscountValue
+        });
+    } else {
+        hideDiscountPreview();
+        
+        if (!isValid) {
+            console.log('❌ Desconto inválido:', {
+                value: discountValue,
+                installmentValue,
+                errors: validationHTML.length > 0
+            });
         }
+    }
+    
+    return isValid;
+}
         
         /**
          * Atualizar preview do desconto
@@ -2766,6 +2788,42 @@ function getStatusIcon($status) {
             
             return splits;
         }
+
+        // Adicionar função de debug para testar o envio
+window.testDiscountSubmission = function() {
+    console.log('🧪 Testando configuração de desconto...');
+    
+    const discountEnabled = document.getElementById('discount-enabled')?.checked;
+    const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
+    const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
+    const installmentCount = parseInt(document.getElementById('installment-count')?.value || 0);
+    
+    if (discountEnabled && discountValue > 0 && installmentValue > 0 && installmentCount > 0) {
+        const totalSavings = discountValue * installmentCount;
+        const percentage = (discountValue / installmentValue) * 100;
+        
+        console.log('💰 Configuração do desconto:', {
+            enabled: true,
+            discountPerInstallment: 'R$ ' + discountValue.toLocaleString('pt-BR', {minimumFractionDigits: 2}),
+            totalSavings: 'R$ ' + totalSavings.toLocaleString('pt-BR', {minimumFractionDigits: 2}),
+            percentage: percentage.toFixed(1) + '%',
+            isValid: validateDiscountInput()
+        });
+        
+        return {
+            discount_enabled: '1',
+            discount_value: discountValue.toString(),
+            will_be_sent: true
+        };
+    } else {
+        console.log('ℹ️ Desconto não configurado ou inválido');
+        return {
+            discount_enabled: '0',
+            discount_value: '0',
+            will_be_sent: false
+        };
+    }
+}
         
         /**
          * Adicionar novo split COM DESCONTO
