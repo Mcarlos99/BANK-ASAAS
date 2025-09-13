@@ -56,121 +56,128 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 try {
     switch ($action) {
 
-                case 'create-installment-with-discount':
-                    try {
-                        // Usar configuração dinâmica baseada no polo do usuário
-                        $dynamicAsaas = new DynamicAsaasConfig();
-                        $asaas = $dynamicAsaas->getInstance();
-                        
-                        // Dados do pagamento base
-                        $paymentData = $_POST['payment'] ?? [];
-                        
-                        // Dados do parcelamento
-                        $installmentData = $_POST['installment'] ?? [];
-                        
-                        // ===== DADOS DO DESCONTO (NOVO) =====
-                        $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
-                        
-                        if ($discountEnabled) {
-                            $discountValue = floatval($_POST['discount_value'] ?? 0);
-                            
-                            // Validações do desconto
-                            if ($discountValue <= 0) {
-                                jsonResponse(false, null, 'Valor do desconto deve ser maior que zero');
-                            }
-                            
-                            $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
-                            if ($discountValue >= $installmentValue) {
-                                jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
-                            }
-                            
-                            // Validar máximo de 50%
-                            $maxDiscount = $installmentValue * (MAX_DISCOUNT_PERCENTAGE / 100);
-                            if ($discountValue > $maxDiscount) {
-                                jsonResponse(false, null, "Desconto máximo: R$ " . number_format($maxDiscount, 2, ',', '.') . " (" . MAX_DISCOUNT_PERCENTAGE . "% da parcela)");
-                            }
-                            
-                            // Adicionar desconto aos dados do parcelamento
-                            $installmentData['discount_value'] = $discountValue;
-                            $installmentData['discount_type'] = $_POST['discount_type'] ?? 'FIXED';
-                            $installmentData['discount_deadline_type'] = $_POST['discount_deadline_type'] ?? 'DUE_DATE';
-                        }
-                        
-                        // Validações básicas mantidas...
-                        if (empty($paymentData['customer'])) {
-                            jsonResponse(false, null, 'Cliente é obrigatório');
-                        }
-                        
-                        if (empty($installmentData['installmentCount']) || $installmentData['installmentCount'] < 2) {
-                            jsonResponse(false, null, 'Número de parcelas deve ser maior que 1');
-                        }
-                        
-                        if (empty($installmentData['installmentValue']) || $installmentData['installmentValue'] <= 0) {
-                            jsonResponse(false, null, 'Valor da parcela deve ser maior que zero');
-                        }
-                        
-                        // Validar número máximo de parcelas
-                        if ($installmentData['installmentCount'] > MAX_INSTALLMENTS) {
-                            jsonResponse(false, null, 'Número máximo de parcelas é ' . MAX_INSTALLMENTS);
-                        }
-                        
-                        // Validar data de vencimento
-                        if (empty($paymentData['dueDate'])) {
-                            jsonResponse(false, null, 'Data de vencimento é obrigatória');
-                        }
-                        
-                        if (strtotime($paymentData['dueDate']) < strtotime('today')) {
-                            jsonResponse(false, null, 'Data de vencimento não pode ser anterior a hoje');
-                        }
-                        
-                        // Preparar dados dos splits
-                        $splits = [];
-                        if (isset($_POST['splits'])) {
-                            foreach ($_POST['splits'] as $split) {
-                                if (!empty($split['walletId'])) {
-                                    $splitData = ['walletId' => $split['walletId']];
-                                    
-                                    if (!empty($split['percentualValue'])) {
-                                        $splitData['percentualValue'] = floatval($split['percentualValue']);
-                                    }
-                                    if (!empty($split['fixedValue'])) {
-                                        $splitData['fixedValue'] = floatval($split['fixedValue']);
-                                    }
-                                    
-                                    $splits[] = $splitData;
-                                }
-                            }
-                        }
-                        
-                        // ===== USAR INSTALLMENT MANAGER COM DESCONTO =====
-                        $installmentManager = new InstallmentManager();
-                        $result = $installmentManager->createInstallment($paymentData, $splits, $installmentData);
-                        
-                        // Preparar resposta com informações de desconto
-                        $responseMessage = "✅ Mensalidade criada com sucesso! " . 
-                            $installmentData['installmentCount'] . " parcelas de R$ " . 
-                            number_format($installmentData['installmentValue'], 2, ',', '.');
-                        
-                        if ($discountEnabled && isset($installmentData['discount_value'])) {
-                            $totalDiscount = $installmentData['discount_value'] * $installmentData['installmentCount'];
-                            $responseMessage .= "<br>🏷️ <strong>Desconto:</strong> R$ " . 
-                                number_format($installmentData['discount_value'], 2, ',', '.') . 
-                                " por parcela (economia total: R$ " . 
-                                number_format($totalDiscount, 2, ',', '.') . ")";
-                            $responseMessage .= "<br><small class='text-success'>Válido até o vencimento de cada parcela</small>";
-                        }
-                        
-                        if (!empty($result['data']['payment']['invoiceUrl'])) {
-                            $responseMessage .= '<br><a href="' . $result['data']['payment']['invoiceUrl'] . '" target="_blank" class="btn btn-sm btn-outline-primary mt-2"><i class="bi bi-eye"></i> Ver 1ª Parcela</a>';
-                        }
-                        
-                        jsonResponse(true, $result, $responseMessage);
-                        
-                    } catch (Exception $e) {
-                        jsonResponse(false, null, $e->getMessage());
-                    }
-                    break;
+
+        case 'create-installment-with-discount':
+            try {
+                error_log("=== INÍCIO MENSALIDADE COM DESCONTO ===");
                 
+                // Usar configuração dinâmica baseada no polo do usuário
+                $dynamicAsaas = new DynamicAsaasConfig();
+                $asaas = $dynamicAsaas->getInstance();
+                
+                // Dados básicos
+                $paymentData = $_POST['payment'] ?? [];
+                $installmentData = $_POST['installment'] ?? [];
+                
+                error_log("Dados iniciais - Payment: " . json_encode($paymentData));
+                error_log("Dados iniciais - Installment: " . json_encode($installmentData));
+                
+                // ===== PROCESSAR DESCONTO =====
+                $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
+                error_log("Desconto habilitado: " . ($discountEnabled ? 'SIM' : 'NÃO'));
+                
+                if ($discountEnabled) {
+                    $discountValue = floatval($_POST['discount_value'] ?? 0);
+                    error_log("Valor do desconto recebido: {$discountValue}");
+                    
+                    if ($discountValue > 0) {
+                        // ===== ADICIONAR DESCONTO AOS DADOS DO PAGAMENTO =====
+                        $paymentData['discount'] = [
+                            'value' => $discountValue,
+                            'dueDateLimitDays' => 0,
+                            'type' => 'FIXED'
+                        ];
+                        
+                        error_log("DESCONTO ADICIONADO! PaymentData agora: " . json_encode($paymentData));
+                    }
+                }
+                
+                // Validações básicas
+                if (empty($paymentData['customer'])) {
+                    jsonResponse(false, null, 'Cliente é obrigatório');
+                }
+                
+                if (empty($installmentData['installmentCount']) || $installmentData['installmentCount'] < 2) {
+                    jsonResponse(false, null, 'Número de parcelas deve ser maior que 1');
+                }
+                
+                if (empty($installmentData['installmentValue']) || $installmentData['installmentValue'] <= 0) {
+                    jsonResponse(false, null, 'Valor da parcela deve ser maior que zero');
+                }
+                
+                if (empty($paymentData['dueDate'])) {
+                    jsonResponse(false, null, 'Data de vencimento é obrigatória');
+                }
+                
+                if (strtotime($paymentData['dueDate']) < strtotime('today')) {
+                    jsonResponse(false, null, 'Data de vencimento não pode ser anterior a hoje');
+                }
+                
+                // Preparar splits
+                $splits = [];
+                if (isset($_POST['splits'])) {
+                    foreach ($_POST['splits'] as $split) {
+                        if (!empty($split['walletId'])) {
+                            $splitData = ['walletId' => $split['walletId']];
+                            
+                            if (!empty($split['percentualValue'])) {
+                                $splitData['percentualValue'] = floatval($split['percentualValue']);
+                            }
+                            if (!empty($split['fixedValue'])) {
+                                $splitData['fixedValue'] = floatval($split['fixedValue']);
+                            }
+                            
+                            $splits[] = $splitData;
+                        }
+                    }
+                }
+                
+                error_log("Splits preparados: " . json_encode($splits));
+                
+                // ===== CHAMAR ASAAS COM DESCONTO =====
+                error_log("Chamando ASAAS com PaymentData: " . json_encode($paymentData));
+                error_log("Splits: " . json_encode($splits));
+                error_log("InstallmentData: " . json_encode($installmentData));
+                
+                $result = $asaas->createInstallmentPaymentWithSplit($paymentData, $splits, $installmentData);
+                
+                error_log("Resultado ASAAS: " . json_encode($result));
+                
+                // Salvar no banco
+                $db = DatabaseManager::getInstance();
+                $paymentSaveData = array_merge($result, ['polo_id' => $usuario['polo_id']]);
+                $db->savePayment($paymentSaveData);
+                
+                if (!empty($splits)) {
+                    $db->savePaymentSplits($result['id'], $splits);
+                }
+                
+                // Resposta de sucesso
+                $responseMessage = "✅ Mensalidade criada! " . 
+                    $installmentData['installmentCount'] . " parcelas de R$ " . 
+                    number_format($installmentData['installmentValue'], 2, ',', '.');
+                    
+                if ($discountEnabled && isset($paymentData['discount'])) {
+                    $totalSavings = $paymentData['discount']['value'] * $installmentData['installmentCount'];
+                    $responseMessage .= "<br>💰 Desconto: R$ " . 
+                        number_format($paymentData['discount']['value'], 2, ',', '.') . 
+                        " por parcela (Total: R$ " . 
+                        number_format($totalSavings, 2, ',', '.') . ")";
+                }
+                
+                if (!empty($result['invoiceUrl'])) {
+                    $responseMessage .= '<br><a href="' . $result['invoiceUrl'] . '" target="_blank" class="btn btn-sm btn-outline-primary mt-2">Ver 1ª Parcela</a>';
+                }
+                
+                error_log("=== FIM MENSALIDADE COM DESCONTO ===");
+                
+                jsonResponse(true, $result, $responseMessage);
+                
+            } catch (Exception $e) {
+                error_log("ERRO na mensalidade com desconto: " . $e->getMessage());
+                jsonResponse(false, null, $e->getMessage());
+            }
+            break;
                 case 'discount-performance-report':
                     try {
                         $startDate = $_GET['start'] ?? date('Y-m-01');

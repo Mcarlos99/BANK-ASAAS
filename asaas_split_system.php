@@ -102,6 +102,15 @@ class AsaasSplitPayment {
         try {
             $this->log("Iniciando criação de parcelamento - Parcelas: {$installmentData['installmentCount']} x R$ {$installmentData['installmentValue']}", 'INFO');
             
+            // ===== LOG DE DEBUG PARA DESCONTO =====
+            $this->log("PaymentData recebido: " . json_encode($paymentData), 'DEBUG');
+            
+            if (isset($paymentData['discount'])) {
+                $this->log("DESCONTO DETECTADO: " . json_encode($paymentData['discount']), 'INFO');
+            } else {
+                $this->log("NENHUM DESCONTO nos dados do pagamento", 'WARNING');
+            }
+            
             // Validar dados do parcelamento
             $installmentCount = (int)$installmentData['installmentCount'];
             $installmentValue = (float)$installmentData['installmentValue'];
@@ -135,7 +144,7 @@ class AsaasSplitPayment {
                 throw new Exception("A soma dos valores fixos não pode ser maior ou igual ao valor da parcela");
             }
             
-            // Preparar dados para API do ASAAS
+            // ===== PREPARAR DADOS PARA API ASAAS COM DESCONTO =====
             $data = [
                 'customer' => $paymentData['customer'],
                 'billingType' => $paymentData['billingType'],
@@ -146,11 +155,13 @@ class AsaasSplitPayment {
                 'split' => $splitData // ASAAS aplica automaticamente o split em todas as parcelas
             ];
             
-            // Adicionar campos opcionais
-            if (isset($paymentData['discount'])) {
+            // ===== ADICIONAR DESCONTO À REQUISIÇÃO (CORREÇÃO PRINCIPAL) =====
+            if (isset($paymentData['discount']) && !empty($paymentData['discount'])) {
                 $data['discount'] = $paymentData['discount'];
+                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
             }
             
+            // Adicionar campos opcionais
             if (isset($paymentData['interest'])) {
                 $data['interest'] = $paymentData['interest'];
             }
@@ -164,10 +175,17 @@ class AsaasSplitPayment {
                 $data['description'] = $paymentData['description'] . ' - ' . $installmentData['description_suffix'];
             }
             
-            $this->log("Dados preparados para API: " . json_encode($data, JSON_UNESCAPED_UNICODE), 'DEBUG');
+            $this->log("DADOS FINAIS PARA API ASAAS: " . json_encode($data, JSON_UNESCAPED_UNICODE), 'DEBUG');
             
-            // Fazer requisição para API
+            // ===== FAZER REQUISIÇÃO PARA API =====
             $response = $this->makeRequest('/payments', 'POST', $data);
+            
+            // ===== VERIFICAR SE DESCONTO FOI APLICADO =====
+            if (isset($response['discount']) && $response['discount']['value'] > 0) {
+                $this->log("✅ DESCONTO APLICADO COM SUCESSO: R$ {$response['discount']['value']}", 'SUCCESS');
+            } else {
+                $this->log("⚠️ DESCONTO NÃO APLICADO - Resposta: " . json_encode($response['discount'] ?? 'SEM CAMPO DISCOUNT'), 'WARNING');
+            }
             
             // Log de sucesso
             $this->log("Parcelamento criado com sucesso - ID: {$response['id']}", 'SUCCESS');
@@ -180,7 +198,9 @@ class AsaasSplitPayment {
                 'total_value' => $installmentCount * $installmentValue,
                 'first_due_date' => $paymentData['dueDate'],
                 'split_applied_to_all' => true,
-                'splits_count' => count($splitData)
+                'splits_count' => count($splitData),
+                'has_discount' => isset($paymentData['discount']) && $paymentData['discount']['value'] > 0,
+                'discount_per_installment' => isset($paymentData['discount']) ? $paymentData['discount']['value'] : 0
             ];
             
             return $response;
