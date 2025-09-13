@@ -1264,280 +1264,395 @@ function getStatusIcon($status) {
 
                     <!-- ===== NOVA SEÇÃO: MENSALIDADES ===== -->
                     <?php if ($permissions['can_create_installments']): ?>
-                    <div id="installments-section" class="section">
-                        <div class="card installment-form-card">
-                            <div class="card-header bg-primary text-white">
-                                <h5><i class="bi bi-calendar-month me-2"></i>Nova Mensalidade Parcelada</h5>
-                                <small>Crie mensalidades para alunos com parcelamento automático</small>
-                            </div>
-                            <div class="card-body">
-                                <form method="POST" id="installment-form">
-                                    <input type="hidden" name="action" value="create_installment">
-                                    
-                                    <div class="row">
-                                        <!-- ===== DADOS DA MENSALIDADE ===== -->
-                                        <div class="col-md-6">
-                                            <h6 class="border-bottom pb-2 mb-3 text-primary">
-                                                <i class="bi bi-info-circle me-1"></i>Dados da Mensalidade
-                                            </h6>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Aluno/Cliente *</label>
-                                                <select class="form-select" name="payment[customer]" required>
-                                                    <option value="">Selecione um aluno</option>
-                                                    <?php foreach ($customers as $customer): ?>
-                                                    <option value="<?php echo $customer['id']; ?>">
-                                                        <?php echo htmlspecialchars($customer['name']); ?> 
-                                                        (<?php echo htmlspecialchars($customer['email']); ?>)
-                                                    </option>
-                                                    <?php endforeach; ?>
-                                                </select>
-                                                <small class="form-text text-muted">
-                                                    <i class="bi bi-info-circle"></i>
-                                                    Selecione o aluno que pagará a mensalidade
-                                                </small>
-                                            </div>
-                                            
-                                            <div class="row">
-                                                <div class="col-md-6">
-                                                    <div class="mb-3">
-                                                        <label class="form-label">Tipo de Cobrança *</label>
-                                                        <select class="form-select" name="payment[billingType]" required>
-                                                            <option value="BOLETO">📄 Boleto Bancário</option>
-                                                            <option value="PIX">⚡ PIX</option>
-                                                            <option value="CREDIT_CARD">💳 Cartão de Crédito</option>
-                                                            <option value="DEBIT_CARD">💳 Cartão de Débito</option>
-                                                        </select>
-                                                    </div>
-                                                </div>
-                                                <div class="col-md-6">
-                                                    <div class="mb-3">
-                                                        <label class="form-label">Data do 1º Vencimento *</label>
-                                                        <input type="date" class="form-control" name="payment[dueDate]" 
-                                                               value="<?php echo date('Y-m-d', strtotime('+7 days')); ?>" 
-                                                               required id="first-due-date">
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            <div class="mb-3">
-                                                <label class="form-label">Descrição da Mensalidade *</label>
-                                                <input type="text" class="form-control" name="payment[description]" 
-                                                       placeholder="Ex: Mensalidade Escolar 2025, Curso Técnico..." required>
-                                            </div>
-                                        </div>
-                                        
-                                        <!-- ===== CONFIGURAÇÃO DO PARCELAMENTO ===== -->
-                                        <div class="col-md-6">
-                                            <h6 class="border-bottom pb-2 mb-3 text-success">
-                                                <i class="bi bi-calculator me-1"></i>Parcelamento
-                                            </h6>
-                                            
-                                            <div class="installment-calculator">
-                                                <div class="row">
-                                                    <div class="col-md-6">
-                                                        <div class="mb-3">
-                                                            <label class="form-label">Valor da Parcela (R$) *</label>
-                                                            <input type="number" class="form-control" 
-                                                                   name="installment[installmentValue]" 
-                                                                   step="0.01" min="1" 
-                                                                   placeholder="100.00" 
-                                                                   required id="installment-value"
-                                                                   oninput="calculateInstallment()">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="mb-3">
-                                                            <label class="form-label">Quantidade de Parcelas *</label>
-                                                            <select class="form-select" name="installment[installmentCount]" 
-                                                                    required id="installment-count"
-                                                                    onchange="calculateInstallment()">
-                                                                <option value="">Selecione</option>
-                                                                <?php for($i = 2; $i <= 24; $i++): ?>
-                                                                <option value="<?php echo $i; ?>"><?php echo $i; ?>x</option>
-                                                                <?php endfor; ?>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                
-                                                <div class="calculator-result" id="calculation-result" style="display: none;">
-                                                    <div class="row text-center">
-                                                        <div class="col-6">
-                                                            <div class="value-display" id="total-value">R$ 0,00</div>
-                                                            <small class="text-muted">Valor Total</small>
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <div class="value-display" id="installment-summary">0x R$ 0,00</div>
-                                                            <small class="text-muted">Parcelamento</small>
-                                                        </div>
-                                                    </div>
-                                                    <div class="mt-3" id="due-dates-preview"></div>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <!-- ===== CONFIGURAÇÃO DO SPLIT ===== -->
-                                    <div class="row mt-4">
-                                        <div class="col-12">
-                                            <h6 class="border-bottom pb-2 mb-3 text-warning">
-                                                <i class="bi bi-pie-chart me-1"></i>Configuração do Split
-                                                <small class="text-muted ms-2">(Opcional - Aplicado a todas as parcelas)</small>
-                                            </h6>
-                                            
-                                            <div id="splits-container">
-                                                <div class="split-item p-3 mb-3">
-                                                    <div class="mb-3">
-                                                        <label class="form-label">Destinatário</label>
-                                                        <select class="form-select" name="splits[0][walletId]">
-                                                            <option value="">Selecione um destinatário</option>
-                                                            <?php foreach ($walletIds as $wallet): ?>
-                                                                <?php if ($wallet['is_active']): ?>
-                                                                <option value="<?php echo $wallet['wallet_id']; ?>">
-                                                                    <?php echo htmlspecialchars($wallet['name']); ?>
-                                                                </option>
-                                                                <?php endif; ?>
-                                                            <?php endforeach; ?>
-                                                        </select>
-                                                    </div>
-                                                    
-                                                    <div class="row">
-                                                        <div class="col-6">
-                                                            <label class="form-label">Percentual (%)</label>
-                                                            <input type="number" class="form-control" name="splits[0][percentualValue]" 
-                                                                   step="0.01" max="100" placeholder="15.00">
-                                                            <small class="form-text text-muted">Ex: 15% de cada parcela</small>
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <label class="form-label">Valor Fixo (R$)</label>
-                                                            <input type="number" class="form-control" name="splits[0][fixedValue]" 
-                                                                   step="0.01" placeholder="5.00">
-                                                            <small class="form-text text-muted">Ex: R$ 5,00 de cada parcela</small>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            
-                                            <div class="d-flex justify-content-between align-items-center mb-3">
-                                                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addSplit()">
-                                                    <i class="bi bi-plus me-1"></i>Adicionar Split
-                                                </button>
-                                                <small class="text-muted">
-                                                    <i class="bi bi-info-circle"></i>
-                                                    Os splits serão aplicados automaticamente a todas as parcelas
-                                                </small>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    
-                                    <hr>
-                                    
-                                    <!-- ===== CONFIRMAÇÃO E ENVIO ===== -->
-                                    <div class="row">
-                                        <div class="col-md-8">
-                                            <div class="installment-summary" id="final-summary" style="display: none;">
-                                                <h6 class="text-primary mb-2">📋 Resumo da Mensalidade</h6>
-                                                <div id="summary-content"></div>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-4">
-                                            <div class="form-check mb-3">
-                                                <input class="form-check-input" type="checkbox" id="confirm-installment">
-                                                <label class="form-check-label" for="confirm-installment">
-                                                    Confirmo que os dados da mensalidade estão corretos
-                                                </label>
-                                            </div>
-                                            <button type="submit" class="btn btn-installment w-100" disabled id="submit-installment">
-                                                <i class="bi bi-calendar-month me-2"></i>Criar Mensalidade
-                                            </button>
-                                        </div>
-                                    </div>
-                                </form>
-                            </div>
+
+<div id="installments-section" class="section">
+    <div class="card installment-form-card">
+        <div class="card-header bg-primary text-white">
+            <h5><i class="bi bi-calendar-month me-2"></i>Nova Mensalidade Parcelada com Sistema de Desconto</h5>
+            <small>Crie mensalidades com descontos automáticos para pagamento em dia</small>
+        </div>
+        <div class="card-body">
+            <form method="POST" id="installment-form">
+                <input type="hidden" name="action" value="create_installment_with_discount">
+                
+                <div class="row">
+                    <!-- ===== DADOS DA MENSALIDADE ===== -->
+                    <div class="col-md-6">
+                        <h6 class="border-bottom pb-2 mb-3 text-primary">
+                            <i class="bi bi-info-circle me-1"></i>Dados da Mensalidade
+                        </h6>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Aluno/Cliente *</label>
+                            <select class="form-select" name="payment[customer]" required>
+                                <option value="">Selecione um aluno</option>
+                                <?php foreach ($customers as $customer): ?>
+                                <option value="<?php echo $customer['id']; ?>">
+                                    <?php echo htmlspecialchars($customer['name']); ?> 
+                                    (<?php echo htmlspecialchars($customer['email']); ?>)
+                                </option>
+                                <?php endforeach; ?>
+                            </select>
                         </div>
                         
-                        <!-- ===== MENSALIDADES RECENTES ===== -->
-                        <?php if (!empty($recentInstallments)): ?>
-                        <div class="card mt-4">
-                            <div class="card-header">
-                                <h5><i class="bi bi-list me-2"></i>Mensalidades Cadastradas</h5>
+                        <div class="row">
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Tipo de Cobrança *</label>
+                                    <select class="form-select" name="payment[billingType]" required>
+                                        <option value="BOLETO">📄 Boleto Bancário</option>
+                                        <option value="PIX">⚡ PIX</option>
+                                        <option value="CREDIT_CARD">💳 Cartão de Crédito</option>
+                                        <option value="DEBIT_CARD">💳 Cartão de Débito</option>
+                                    </select>
+                                </div>
                             </div>
-                            <div class="card-body">
-                                <div class="table-responsive">
-                                    <table class="table table-hover">
-                                        <thead>
-                                            <tr>
-                                                <th>Cliente</th>
-                                                <th>Descrição</th>
-                                                <th>Parcelas</th>
-                                                <th>Valor Total</th>
-                                                <th>1º Vencimento</th>
-                                                <th>Status</th>
-                                                <th>Ações</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <?php foreach ($recentInstallments as $installment): ?>
-                                            <tr>
-                                                <td>
-                                                    <strong>Cliente ID: <?php echo htmlspecialchars($installment['customer_id']); ?></strong><br>
-                                                    <small class="text-muted">ID: <?php echo substr($installment['installment_id'], 0, 8); ?>...</small>
-                                                </td>
-                                                <td>
-                                                    <?php echo htmlspecialchars($installment['description']); ?><br>
-                                                    <small class="text-muted">
-                                                        <?php echo $installment['billing_type']; ?>
-                                                        <?php if ($installment['has_splits']): ?>
-                                                        • <?php echo $installment['splits_count']; ?> split(s)
-                                                        <?php endif; ?>
-                                                    </small>
-                                                </td>
-                                                <td>
-                                                    <span class="badge bg-primary"><?php echo $installment['installment_count']; ?>x</span><br>
-                                                    <small class="text-success">R$ <?php echo number_format($installment['installment_value'], 2, ',', '.'); ?></small>
-                                                </td>
-                                                <td>
-                                                    <strong class="text-success">
-                                                        R$ <?php echo number_format($installment['total_value'], 2, ',', '.'); ?>
-                                                    </strong>
-                                                </td>
-                                                <td>
-                                                    <small><?php echo date('d/m/Y', strtotime($installment['first_due_date'])); ?></small>
-                                                </td>
-                                                <td>
-                                                    <span class="badge bg-info">Ativa</span>
-                                                </td>
-                                                <td>
-                                                    <div class="btn-group" role="group">
-                                                        <button class="btn btn-sm btn-outline-primary" 
-                                                                onclick="viewInstallment('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Ver todas as parcelas">
-                                                            <i class="bi bi-eye"></i>
-                                                        </button>
-                                                        <?php if ($permissions['can_generate_payment_books']): ?>
-                                                        <button class="btn btn-sm btn-outline-success" 
-                                                                onclick="generatePaymentBook('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Gerar carnê PDF">
-                                                            <i class="bi bi-file-pdf"></i>
-                                                        </button>
-                                                        <?php endif; ?>
-                                                        <button class="btn btn-sm btn-outline-info" 
-                                                                onclick="copyInstallmentInfo('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Copiar informações">
-                                                            <i class="bi bi-clipboard"></i>
-                                                        </button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                            <?php endforeach; ?>
-                                        </tbody>
-                                    </table>
+                            <div class="col-md-6">
+                                <div class="mb-3">
+                                    <label class="form-label">Data do 1º Vencimento *</label>
+                                    <input type="date" class="form-control" name="payment[dueDate]" 
+                                           value="<?php echo date('Y-m-d', strtotime('+7 days')); ?>" 
+                                           required id="first-due-date">
                                 </div>
                             </div>
                         </div>
-                        <?php endif; ?>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Descrição da Mensalidade *</label>
+                            <input type="text" class="form-control" name="payment[description]" 
+                                   placeholder="Ex: Mensalidade Escolar 2025, Curso Técnico..." required>
+                        </div>
                     </div>
+                    
+                    <!-- ===== CONFIGURAÇÃO DO PARCELAMENTO ===== -->
+                    <div class="col-md-6">
+                        <h6 class="border-bottom pb-2 mb-3 text-success">
+                            <i class="bi bi-calculator me-1"></i>Parcelamento
+                        </h6>
+                        
+                        <div class="installment-calculator">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Valor da Parcela (R$) *</label>
+                                        <input type="number" class="form-control" 
+                                               name="installment[installmentValue]" 
+                                               step="0.01" min="1" 
+                                               placeholder="150.00" 
+                                               required id="installment-value"
+                                               oninput="calculateInstallmentWithDiscount()">
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Quantidade de Parcelas *</label>
+                                        <select class="form-select" name="installment[installmentCount]" 
+                                                required id="installment-count"
+                                                onchange="calculateInstallmentWithDiscount()">
+                                            <option value="">Selecione</option>
+                                            <?php for($i = 2; $i <= 24; $i++): ?>
+                                            <option value="<?php echo $i; ?>"><?php echo $i; ?>x</option>
+                                            <?php endfor; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="calculator-result" id="calculation-result" style="display: none;">
+                                <div class="row text-center">
+                                    <div class="col-6">
+                                        <div class="value-display" id="total-value">R$ 0,00</div>
+                                        <small class="text-muted">Valor Total</small>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="value-display" id="installment-summary">0x R$ 0,00</div>
+                                        <small class="text-muted">Parcelamento</small>
+                                    </div>
+                                </div>
+                                <div class="mt-3" id="due-dates-preview"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ===== NOVO: SISTEMA DE DESCONTO ===== -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <h6 class="border-bottom pb-2 mb-3 text-warning">
+                            <i class="bi bi-percent me-1"></i>Sistema de Desconto
+                            <small class="text-muted ms-2">(Aplicado a todas as parcelas)</small>
+                        </h6>
+                        
+                        <div class="discount-card p-4" style="background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%); border-radius: 15px; border: 2px dashed #ff6b6b;">
+                            <div class="form-check mb-3">
+                                <input class="form-check-input" type="checkbox" id="enable-discount" 
+                                       name="discount[enabled]" value="true"
+                                       onchange="toggleDiscountFields()">
+                                <label class="form-check-label" for="enable-discount">
+                                    <strong>🎯 Ativar Desconto para Pagamento em Dia</strong>
+                                    <br><small class="text-muted">Incentive o pagamento pontual com descontos automáticos</small>
+                                </label>
+                            </div>
+                            
+                            <div id="discount-fields" style="display: none;">
+                                <div class="row">
+                                    <div class="col-md-4">
+                                        <div class="mb-3">
+                                            <label class="form-label">Tipo de Desconto *</label>
+                                            <select class="form-select" name="discount[type]" id="discount-type" 
+                                                    onchange="updateDiscountHint(); calculateInstallmentWithDiscount();">
+                                                <option value="FIXED">💰 Valor Fixo (R$)</option>
+                                                <option value="PERCENTAGE">📊 Percentual (%)</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="mb-3">
+                                            <label class="form-label">Valor do Desconto *</label>
+                                            <input type="number" class="form-control" 
+                                                   name="discount[value]" 
+                                                   step="0.01" min="0.01" 
+                                                   placeholder="50.00" 
+                                                   id="discount-value"
+                                                   oninput="calculateInstallmentWithDiscount()">
+                                            <small class="form-text text-muted" id="discount-hint">
+                                                Digite o valor do desconto
+                                            </small>
+                                        </div>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <div class="mb-3">
+                                            <label class="form-label">Prazo do Desconto *</label>
+                                            <select class="form-select" name="discount[deadline]" id="discount-deadline"
+                                                    onchange="updateDiscountDeadlineHint()">
+                                                <option value="DUE_DATE">📅 Até o dia do vencimento</option>
+                                                <option value="BEFORE_DUE_DATE">⏰ Até 1 dia antes do vencimento</option>
+                                                <option value="3_DAYS_BEFORE">📆 Até 3 dias antes do vencimento</option>
+                                                <option value="5_DAYS_BEFORE">🗓️ Até 5 dias antes do vencimento</option>
+                                            </select>
+                                            <small class="form-text text-muted" id="deadline-hint">
+                                                O desconto expira no prazo definido
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Preview do Desconto -->
+                                <div class="discount-preview" id="discount-preview" style="display: none;">
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <h6 class="text-success">💰 Previsão do Desconto</h6>
+                                            <div id="discount-summary" style="background: white; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6;">
+                                                <div><strong>Valor Original por Parcela:</strong> <span id="original-value-display">R$ 0,00</span></div>
+                                                <div><strong>Valor com Desconto:</strong> <span class="text-success" id="discounted-value-display">R$ 0,00</span></div>
+                                                <div><strong>Economia por Parcela:</strong> <span class="text-success" id="savings-per-installment">R$ 0,00</span></div>
+                                                <div><strong>Economia Total:</strong> <span class="text-success fw-bold" id="total-savings-display">R$ 0,00</span></div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 15px;">
+                                                <h6 class="text-warning"><i class="bi bi-info-circle"></i> Como Funciona</h6>
+                                                <ul class="mb-0 small">
+                                                    <li>✅ Desconto aplicado automaticamente pelo ASAAS</li>
+                                                    <li>⏰ Válido apenas para pagamentos no prazo</li>
+                                                    <li>❌ Após o prazo, cobra-se o valor integral</li>
+                                                    <li>📊 Aplicado em todas as parcelas da mensalidade</li>
+                                                    <li>💡 Incentiva pagamentos pontuais</li>
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- ===== CONFIGURAÇÃO DO SPLIT (MANTIDA) ===== -->
+                <div class="row mt-4">
+                    <div class="col-12">
+                        <h6 class="border-bottom pb-2 mb-3 text-info">
+                            <i class="bi bi-pie-chart me-1"></i>Configuração do Split
+                            <small class="text-muted ms-2">(Opcional - Aplicado a todas as parcelas)</small>
+                        </h6>
+                        
+                        <div id="splits-container">
+                            <div class="split-item p-3 mb-3" style="background: #f8f9fa; border: 2px dashed #dee2e6; border-radius: 10px;">
+                                <div class="mb-3">
+                                    <label class="form-label">Destinatário</label>
+                                    <select class="form-select" name="splits[0][walletId]">
+                                        <option value="">Selecione um destinatário</option>
+                                        <?php foreach ($walletIds as $wallet): ?>
+                                            <?php if ($wallet['is_active']): ?>
+                                            <option value="<?php echo $wallet['wallet_id']; ?>">
+                                                <?php echo htmlspecialchars($wallet['name']); ?>
+                                            </option>
+                                            <?php endif; ?>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                
+                                <div class="row">
+                                    <div class="col-6">
+                                        <label class="form-label">Percentual (%)</label>
+                                        <input type="number" class="form-control" name="splits[0][percentualValue]" 
+                                               step="0.01" max="100" placeholder="15.00">
+                                        <small class="form-text text-muted">Ex: 15% de cada parcela</small>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label">Valor Fixo (R$)</label>
+                                        <input type="number" class="form-control" name="splits[0][fixedValue]" 
+                                               step="0.01" placeholder="5.00">
+                                        <small class="form-text text-muted">Ex: R$ 5,00 de cada parcela</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="addSplitWithDiscount()">
+                                <i class="bi bi-plus me-1"></i>Adicionar Split
+                            </button>
+                            <small class="text-muted">
+                                <i class="bi bi-info-circle"></i>
+                                Splits aplicados no valor original (antes do desconto)
+                            </small>
+                        </div>
+                    </div>
+                </div>
+                
+                <hr>
+                
+                <!-- ===== RESUMO FINAL E CONFIRMAÇÃO ===== -->
+                <div class="row">
+                    <div class="col-md-8">
+                        <div class="alert alert-info" id="final-summary">
+                            <h6 class="text-primary mb-2">📋 Resumo da Mensalidade</h6>
+                            <div id="summary-content">
+                                <div class="text-center text-muted">
+                                    <small>Preencha os dados para ver o resumo</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="confirm-installment">
+                            <label class="form-check-label" for="confirm-installment">
+                                ✅ Confirmo que os dados estão corretos
+                            </label>
+                        </div>
+                        <button type="submit" class="btn btn-installment w-100" disabled id="submit-installment">
+                            <i class="bi bi-calendar-month me-2"></i>Criar Mensalidade com Desconto
+                        </button>
+                        <small class="form-text text-muted text-center d-block mt-2">
+                            💡 O desconto será aplicado automaticamente pelo ASAAS
+                        </small>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- ===== MENSALIDADES RECENTES (ATUALIZADA PARA MOSTRAR DESCONTOS) ===== -->
+    <?php if (!empty($recentInstallments)): ?>
+    <div class="card mt-4">
+        <div class="card-header">
+            <h5><i class="bi bi-list me-2"></i>Mensalidades Cadastradas</h5>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-hover">
+                    <thead>
+                        <tr>
+                            <th>Cliente</th>
+                            <th>Descrição</th>
+                            <th>Parcelas</th>
+                            <th>Valor</th>
+                            <th>Desconto</th>
+                            <th>1º Vencimento</th>
+                            <th>Status</th>
+                            <th>Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($recentInstallments as $installment): ?>
+                        <tr>
+                            <td>
+                                <strong>Cliente ID: <?php echo htmlspecialchars($installment['customer_id']); ?></strong><br>
+                                <small class="text-muted">ID: <?php echo substr($installment['installment_id'], 0, 8); ?>...</small>
+                            </td>
+                            <td>
+                                <?php echo htmlspecialchars($installment['description']); ?><br>
+                                <small class="text-muted">
+                                    <?php echo $installment['billing_type']; ?>
+                                    <?php if ($installment['has_splits']): ?>
+                                    • <?php echo $installment['splits_count']; ?> split(s)
+                                    <?php endif; ?>
+                                </small>
+                            </td>
+                            <td>
+                                <span class="badge bg-primary"><?php echo $installment['installment_count']; ?>x</span><br>
+                                <small class="text-success">R$ <?php echo number_format($installment['installment_value'], 2, ',', '.'); ?></small>
+                            </td>
+                            <td>
+                                <strong class="text-success">
+                                    R$ <?php echo number_format($installment['total_value'], 2, ',', '.'); ?>
+                                </strong>
+                            </td>
+                            <td>
+                                <?php if (!empty($installment['has_discount'])): ?>
+                                    <span class="badge bg-warning">
+                                        <i class="bi bi-percent"></i>
+                                        <?php 
+                                        if ($installment['discount_type'] === 'FIXED') {
+                                            echo 'R$ ' . number_format($installment['discount_value'], 2, ',', '.');
+                                        } else {
+                                            echo $installment['discount_value'] . '%';
+                                        }
+                                        ?>
+                                    </span><br>
+                                    <small class="text-muted">Por parcela</small>
+                                <?php else: ?>
+                                    <span class="text-muted">-</span>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <small><?php echo date('d/m/Y', strtotime($installment['first_due_date'])); ?></small>
+                            </td>
+                            <td>
+                                <span class="badge bg-info">Ativa</span>
+                            </td>
+                            <td>
+                                <div class="btn-group" role="group">
+                                    <button class="btn btn-sm btn-outline-primary" 
+                                            onclick="viewInstallmentWithDiscount('<?php echo $installment['installment_id']; ?>')" 
+                                            data-bs-toggle="tooltip" title="Ver parcelas">
+                                        <i class="bi bi-eye"></i>
+                                    </button>
+                                    <?php if ($permissions['can_generate_payment_books']): ?>
+                                    <button class="btn btn-sm btn-outline-success" 
+                                            onclick="generatePaymentBookWithDiscount('<?php echo $installment['installment_id']; ?>')" 
+                                            data-bs-toggle="tooltip" title="Gerar carnê PDF">
+                                        <i class="bi bi-file-pdf"></i>
+                                    </button>
+                                    <?php endif; ?>
+                                    <button class="btn btn-sm btn-outline-info" 
+                                            onclick="copyInstallmentInfoWithDiscount('<?php echo $installment['installment_id']; ?>')" 
+                                            data-bs-toggle="tooltip" title="Copiar informações">
+                                        <i class="bi bi-clipboard"></i>
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+</div>
                     <?php endif; ?>
 
                     <!-- ===== SEÇÃO CLIENTES (MANTIDA) ===== -->
@@ -2403,6 +2518,724 @@ function getStatusIcon($status) {
             console.log('💰 Máximo de parcelas:', SystemConfig.features.max_installments);
         });
         
+		
+
+// ===== FUNÇÕES PARA SISTEMA DE DESCONTO ===== 
+
+let discountEnabled = false;
+
+/**
+ * Toggle dos campos de desconto
+ */
+function toggleDiscountFields() {
+    const checkbox = document.getElementById('enable-discount');
+    const fields = document.getElementById('discount-fields');
+    const preview = document.getElementById('discount-preview');
+    
+    discountEnabled = checkbox.checked;
+    
+    if (discountEnabled) {
+        fields.style.display = 'block';
+        // Tornar campos obrigatórios
+        document.getElementById('discount-value').setAttribute('required', '');
+        updateDiscountHint();
+    } else {
+        fields.style.display = 'none';
+        preview.style.display = 'none';
+        // Remover obrigatoriedade
+        document.getElementById('discount-value').removeAttribute('required');
+    }
+    
+    calculateInstallmentWithDiscount();
+}
+
+/**
+ * Atualizar hint do desconto
+ */
+function updateDiscountHint() {
+    const type = document.getElementById('discount-type')?.value;
+    const value = parseFloat(document.getElementById('discount-value')?.value || 0);
+    const hint = document.getElementById('discount-hint');
+    
+    if (!hint || !type || value <= 0) return;
+    
+    if (type === 'FIXED') {
+        hint.textContent = `R$ ${value.toLocaleString('pt-BR', {minimumFractionDigits: 2})} de desconto por parcela`;
+    } else {
+        hint.textContent = `${value}% de desconto por parcela`;
+    }
+}
+
+/**
+ * Atualizar hint do prazo
+ */
+function updateDiscountDeadlineHint() {
+    const deadline = document.getElementById('discount-deadline')?.value;
+    const hint = document.getElementById('deadline-hint');
+    
+    if (!hint || !deadline) return;
+    
+    const messages = {
+        'DUE_DATE': 'Desconto válido até o dia do vencimento',
+        'BEFORE_DUE_DATE': 'Desconto válido até 1 dia antes do vencimento',
+        '3_DAYS_BEFORE': 'Desconto válido até 3 dias antes do vencimento',
+        '5_DAYS_BEFORE': 'Desconto válido até 5 dias antes do vencimento'
+    };
+    
+    hint.textContent = messages[deadline] || 'Prazo do desconto';
+}
+
+/**
+ * Calcular valores com desconto
+ */
+function calculateInstallmentWithDiscount() {
+    const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
+    const installmentCount = parseInt(document.getElementById('installment-count')?.value || 0);
+    const firstDueDate = document.getElementById('first-due-date')?.value;
+    
+    const resultDiv = document.getElementById('calculation-result');
+    const summaryDiv = document.getElementById('final-summary');
+    
+    if (installmentValue > 0 && installmentCount > 1) {
+        let discountPerInstallment = 0;
+        let finalInstallmentValue = installmentValue;
+        
+        // Calcular desconto se habilitado
+        if (discountEnabled) {
+            const discountType = document.getElementById('discount-type')?.value || 'FIXED';
+            const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
+            
+            if (discountValue > 0) {
+                if (discountType === 'FIXED') {
+                    discountPerInstallment = Math.min(discountValue, installmentValue - 0.01);
+                } else {
+                    discountPerInstallment = (installmentValue * discountValue) / 100;
+                }
+                finalInstallmentValue = installmentValue - discountPerInstallment;
+            }
+        }
+        
+        const totalValue = installmentValue * installmentCount;
+        const totalSavings = discountPerInstallment * installmentCount;
+        
+        // Atualizar resultado da calculadora
+        document.getElementById('total-value').textContent = 
+            'R$ ' + totalValue.toLocaleString('pt-BR', {minimumFractionDigits: 2});
+        document.getElementById('installment-summary').textContent = 
+            installmentCount + 'x R$ ' + installmentValue.toLocaleString('pt-BR', {minimumFractionDigits: 2});
+        
+        // Mostrar preview das datas
+        if (firstDueDate) {
+            generateDueDatesPreviewWithDiscount(firstDueDate, installmentCount);
+        }
+        
+        // Mostrar resultado
+        resultDiv.style.display = 'block';
+        
+        // Atualizar preview do desconto
+        if (discountEnabled && discountPerInstallment > 0) {
+            updateDiscountPreviewDisplay(installmentValue, finalInstallmentValue, discountPerInstallment, installmentCount, totalSavings);
+            document.getElementById('discount-preview').style.display = 'block';
+        } else {
+            document.getElementById('discount-preview').style.display = 'none';
+        }
+        
+        // Atualizar resumo final
+        updateFinalSummaryWithDiscount(installmentValue, finalInstallmentValue, installmentCount, discountPerInstallment, totalSavings);
+        summaryDiv.style.display = 'block';
+        
+    } else {
+        resultDiv.style.display = 'none';
+        summaryDiv.style.display = 'none';
+        document.getElementById('discount-preview').style.display = 'none';
+    }
+}
+
+/**
+ * Atualizar display do preview do desconto
+ */
+function updateDiscountPreviewDisplay(original, withDiscount, discount, count, totalSavings) {
+    document.getElementById('original-value-display').textContent = 
+        'R$ ' + original.toLocaleString('pt-BR', {minimumFractionDigits: 2});
+    document.getElementById('discounted-value-display').textContent = 
+        'R$ ' + withDiscount.toLocaleString('pt-BR', {minimumFractionDigits: 2});
+    document.getElementById('savings-per-installment').textContent = 
+        'R$ ' + discount.toLocaleString('pt-BR', {minimumFractionDigits: 2});
+    document.getElementById('total-savings-display').textContent = 
+        'R$ ' + totalSavings.toLocaleString('pt-BR', {minimumFractionDigits: 2}) + ' (' + count + ' parcelas)';
+}
+
+/**
+ * Gerar preview das datas com desconto
+ */
+function generateDueDatesPreviewWithDiscount(firstDate, count) {
+    const preview = document.getElementById('due-dates-preview');
+    if (!preview) return;
+    
+    const startDate = new Date(firstDate);
+    let html = '<div class="row"><div class="col-12"><small class="text-muted"><strong>Primeiros vencimentos:</strong></small></div>';
+    
+    for (let i = 0; i < Math.min(count, 6); i++) {
+        const currentDate = new Date(startDate);
+        currentDate.setMonth(startDate.getMonth() + i);
+        
+        const dateStr = currentDate.toLocaleDateString('pt-BR');
+        const parcela = i + 1;
+        
+        html += `<div class="col-6 col-md-4"><div class="parcela-preview" style="background: white; border: 1px solid #dee2e6; border-radius: 8px; padding: 10px; margin: 5px 0; display: flex; justify-content: space-between; align-items: center;">
+            <strong>${parcela}ª:</strong> ${dateStr}
+            ${discountEnabled ? '<i class="bi bi-percent text-warning" title="Com desconto"></i>' : ''}
+        </div></div>`;
+    }
+    
+    if (count > 6) {
+        html += `<div class="col-12"><small class="text-muted">... e mais ${count - 6} parcelas</small></div>`;
+    }
+    
+    html += '</div>';
+    preview.innerHTML = html;
+}
+
+/**
+ * Atualizar resumo final com desconto
+ */
+function updateFinalSummaryWithDiscount(originalValue, discountedValue, count, discountAmount, totalSavings) {
+    const summaryContent = document.getElementById('summary-content');
+    if (!summaryContent) return;
+    
+    const customerSelect = document.querySelector('select[name="payment[customer]"]');
+    const billingTypeSelect = document.querySelector('select[name="payment[billingType]"]');
+    const description = document.querySelector('input[name="payment[description]"]')?.value || '';
+    const firstDueDate = document.getElementById('first-due-date')?.value;
+    
+    const customerName = customerSelect?.selectedOptions[0]?.text || 'Cliente não selecionado';
+    const billingType = billingTypeSelect?.selectedOptions[0]?.text || 'Não selecionado';
+    const formattedDate = firstDueDate ? new Date(firstDueDate).toLocaleDateString('pt-BR') : 'Não definida';
+    const totalValue = originalValue * count;
+    
+    let html = `
+        <div class="row">
+            <div class="col-md-6">
+                <strong>👤 Cliente:</strong> ${customerName}<br>
+                <strong>📝 Descrição:</strong> ${description || 'Não informada'}<br>
+                <strong>💳 Tipo:</strong> ${billingType}<br>
+                <strong>📅 1º Vencimento:</strong> ${formattedDate}
+            </div>
+            <div class="col-md-6">
+                <strong>📊 Parcelas:</strong> ${count}x de R$ ${originalValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})}<br>
+                <strong>💰 Valor Total:</strong> <span class="text-success">R$ ${totalValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span><br>
+    `;
+    
+    if (discountEnabled && discountAmount > 0) {
+        html += `
+                <strong>🎯 Valor c/ Desconto:</strong> <span class="text-primary">R$ ${discountedValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span><br>
+                <strong>💸 Economia Total:</strong> <span class="text-warning fw-bold">R$ ${totalSavings.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</span>
+        `;
+    }
+    
+    html += `
+            </div>
+        </div>
+    `;
+    
+    // Adicionar informações sobre splits se houver
+    const splits = getSplitsInfoWithDiscount();
+    if (splits.length > 0) {
+        html += '<hr><small class="text-info"><strong>📈 Splits configurados:</strong> ';
+        splits.forEach(split => {
+            html += `${split.name} `;
+            if (split.percentage) html += `(${split.percentage}%) `;
+            if (split.fixed) html += `(R$ ${split.fixed}) `;
+        });
+        html += '<br><em>Aplicados no valor original (antes do desconto)</em></small>';
+    }
+    
+    summaryContent.innerHTML = html;
+}
+
+/**
+ * Obter informações dos splits (versão atualizada)
+ */
+function getSplitsInfoWithDiscount() {
+    const splits = [];
+    const splitItems = document.querySelectorAll('#splits-container .split-item');
+    
+    splitItems.forEach(item => {
+        const walletSelect = item.querySelector('select[name*="[walletId]"]');
+        const percentageInput = item.querySelector('input[name*="[percentualValue]"]');
+        const fixedInput = item.querySelector('input[name*="[fixedValue]"]');
+        
+        if (walletSelect && walletSelect.value) {
+            const splitInfo = {
+                name: walletSelect.selectedOptions[0].text,
+                walletId: walletSelect.value,
+                percentage: percentageInput?.value ? parseFloat(percentageInput.value) : null,
+                fixed: fixedInput?.value ? parseFloat(fixedInput.value) : null
+            };
+            splits.push(splitInfo);
+        }
+    });
+    
+    return splits;
+}
+
+/**
+ * Adicionar split (versão atualizada)
+ */
+function addSplitWithDiscount() {
+    // Reutilizar função existente com pequenas modificações
+    if (typeof addSplit === 'function') {
+        addSplit();
+    } else {
+        console.warn('Função addSplit não encontrada, implementando versão simplificada');
+        showToast('Funcionalidade de adicionar split em desenvolvimento', 'info');
+    }
+}
+
+/**
+ * Ver mensalidade com desconto
+ */
+function viewInstallmentWithDiscount(installmentId) {
+    showToast('Carregando mensalidade com informações de desconto...', 'info');
+    
+    // Fazer requisição para API com informações de desconto
+    fetch(`api.php?action=get-installment-with-discount&installment_id=${encodeURIComponent(installmentId)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showInstallmentModalWithDiscount(data.data);
+            } else {
+                showToast('Erro ao carregar mensalidade: ' + data.error, 'error');
+            }
+        })
+        .catch(error => {
+            showToast('Erro de conexão: ' + error.message, 'error');
+        });
+}
+
+/**
+ * Gerar carnê com informações de desconto
+ */
+function generatePaymentBookWithDiscount(installmentId) {
+    if (!confirm('Deseja gerar o carnê em PDF para esta mensalidade?\n\nO carnê mostrará os valores com desconto aplicado.')) {
+        return;
+    }
+    
+    showToast('Gerando carnê com informações de desconto...', 'info');
+    
+    const formData = new FormData();
+    formData.append('action', 'generate-payment-book-with-discount');
+    formData.append('installment_id', installmentId);
+    
+    fetch('api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            const link = document.createElement('a');
+            link.href = data.data.download_url;
+            link.download = data.data.file_name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            showToast('Carnê com desconto gerado! Download iniciado.', 'success');
+        } else {
+            showToast('Erro ao gerar carnê: ' + data.error, 'error');
+        }
+    })
+    .catch(error => {
+        showToast('Erro de conexão: ' + error.message, 'error');
+    });
+}
+
+/**
+ * Copiar informações da mensalidade com desconto
+ */
+function copyInstallmentInfoWithDiscount(installmentId) {
+    const info = `ID da Mensalidade: ${installmentId}\nSistema: IMEP Split ASAAS v3.3\nRecurso: Mensalidade com Desconto Automático`;
+    copyToClipboard(info);
+}
+
+/**
+ * Mostrar modal com parcelas e desconto
+ */
+function showInstallmentModalWithDiscount(installmentData) {
+    console.log('Dados da mensalidade com desconto:', installmentData);
+    
+    // Implementar modal dinâmico
+    const hasDiscount = installmentData.discount_info && installmentData.discount_info.enabled;
+    const discountText = hasDiscount ? ' (com desconto automático)' : '';
+    
+    showToast(`Mensalidade encontrada: ${installmentData.payments?.length || 0} parcelas${discountText}`, 'success');
+}
+
+/**
+ * Event listeners para sistema de desconto
+ */
+document.addEventListener('DOMContentLoaded', function() {
+    // Event listeners para campos de desconto
+    const discountType = document.getElementById('discount-type');
+    const discountValue = document.getElementById('discount-value');
+    const discountDeadline = document.getElementById('discount-deadline');
+    const enableDiscount = document.getElementById('enable-discount');
+    
+    if (discountType) {
+        discountType.addEventListener('change', function() {
+            updateDiscountHint();
+            calculateInstallmentWithDiscount();
+        });
+    }
+    
+    if (discountValue) {
+        discountValue.addEventListener('input', function() {
+            updateDiscountHint();
+            calculateInstallmentWithDiscount();
+        });
+    }
+    
+    if (discountDeadline) {
+        discountDeadline.addEventListener('change', function() {
+            updateDiscountDeadlineHint();
+            calculateInstallmentWithDiscount();
+        });
+    }
+    
+    // Event listeners para campos de parcelamento
+    const installmentValueInput = document.getElementById('installment-value');
+    const installmentCountSelect = document.getElementById('installment-count');
+    const firstDueDateInput = document.getElementById('first-due-date');
+    
+    if (installmentValueInput) {
+        installmentValueInput.addEventListener('input', calculateInstallmentWithDiscount);
+    }
+    
+    if (installmentCountSelect) {
+        installmentCountSelect.addEventListener('change', calculateInstallmentWithDiscount);
+    }
+    
+    if (firstDueDateInput) {
+        firstDueDateInput.addEventListener('change', calculateInstallmentWithDiscount);
+    }
+    
+    // Event listener para confirmação
+    const confirmCheckbox = document.getElementById('confirm-installment');
+    const submitButton = document.getElementById('submit-installment');
+    
+    if (confirmCheckbox && submitButton) {
+        confirmCheckbox.addEventListener('change', function() {
+            submitButton.disabled = !this.checked;
+        });
+    }
+    
+    // Event listeners para outros campos do formulário
+    const customerFields = ['payment[customer]', 'payment[billingType]', 'payment[description]'];
+    customerFields.forEach(fieldName => {
+        const field = document.querySelector(`[name="${fieldName}"]`);
+        if (field) {
+            field.addEventListener('change', calculateInstallmentWithDiscount);
+        }
+    });
+    
+    console.log('✅ Sistema de desconto para mensalidades inicializado');
+});
+
+/**
+ * Validação do formulário antes do envio
+ */
+document.getElementById('installment-form')?.addEventListener('submit', function(e) {
+    const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
+    const installmentCount = parseInt(document.getElementById('installment-count')?.value || 0);
+    const customer = document.querySelector('select[name="payment[customer]"]')?.value;
+    
+    // Validações básicas
+    if (!customer) {
+        e.preventDefault();
+        showToast('Selecione um cliente para continuar', 'warning');
+        return false;
+    }
+    
+    if (installmentValue <= 0 || installmentCount < 2) {
+        e.preventDefault();
+        showToast('Configure corretamente o parcelamento', 'warning');
+        return false;
+    }
+    
+    // Validações específicas do desconto
+    if (discountEnabled) {
+        const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
+        const discountType = document.getElementById('discount-type')?.value;
+        
+        if (discountValue <= 0) {
+            e.preventDefault();
+            showToast('Configure o valor do desconto', 'warning');
+            return false;
+        }
+        
+        if (discountType === 'FIXED' && discountValue >= installmentValue) {
+            e.preventDefault();
+            showToast('Desconto fixo não pode ser maior ou igual ao valor da parcela', 'error');
+            return false;
+        }
+        
+        if (discountType === 'PERCENTAGE' && discountValue >= 100) {
+            e.preventDefault();
+            showToast('Desconto percentual não pode ser maior ou igual a 100%', 'error');
+            return false;
+        }
+    }
+    
+    // Mostrar confirmação final se tudo estiver ok
+    if (!e.defaultPrevented) {
+        const discountInfo = discountEnabled ? 
+            ` com desconto de ${document.getElementById('discount-type').value === 'FIXED' ? 
+                'R$ ' + parseFloat(document.getElementById('discount-value').value).toLocaleString('pt-BR', {minimumFractionDigits: 2}) :
+                parseFloat(document.getElementById('discount-value').value) + '%'} por parcela` : '';
+        
+        const confirmMessage = `Confirma a criação da mensalidade?\n\n` +
+            `• ${installmentCount} parcelas de R$ ${installmentValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})}\n` +
+            `• Total: R$ ${(installmentCount * installmentValue).toLocaleString('pt-BR', {minimumFractionDigits: 2})}${discountInfo}`;
+        
+        if (!confirm(confirmMessage)) {
+            e.preventDefault();
+            return false;
+        }
+        
+        // Mostrar loading
+        const submitBtn = document.getElementById('submit-installment');
+        if (submitBtn) {
+            submitBtn.innerHTML = '<i class="bi bi-hourglass-split"></i> Criando Mensalidade...';
+            submitBtn.disabled = true;
+        }
+    }
+});
+
+/**
+ * Função auxiliar para mostrar toast
+ */
+function showToast(message, type = 'info') {
+    const toastClass = {
+        success: 'text-bg-success',
+        error: 'text-bg-danger', 
+        warning: 'text-bg-warning',
+        info: 'text-bg-info'
+    }[type] || 'text-bg-info';
+    
+    const iconClass = {
+        success: 'bi-check-circle',
+        error: 'bi-exclamation-triangle',
+        warning: 'bi-exclamation-triangle',
+        info: 'bi-info-circle'
+    }[type] || 'bi-info-circle';
+    
+    const toastHtml = `
+        <div class="position-fixed top-0 end-0 p-3" style="z-index: 9999;">
+            <div class="toast show ${toastClass}" role="alert">
+                <div class="d-flex">
+                    <div class="toast-body">
+                        <i class="bi ${iconClass} me-2"></i>
+                        ${message}
+                    </div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" onclick="this.closest('.toast').closest('div').remove()"></button>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.body.insertAdjacentHTML('beforeend', toastHtml);
+    
+    // Auto-remove após 5 segundos
+    setTimeout(() => {
+        const toasts = document.querySelectorAll('.toast');
+        if (toasts.length > 0) {
+            const lastToast = toasts[toasts.length - 1];
+            if (lastToast && lastToast.closest('div')) {
+                lastToast.closest('div').remove();
+            }
+        }
+    }, 5000);
+}
+
+/**
+ * Função auxiliar para copiar texto
+ */
+function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => {
+            showToast('Informações copiadas para a área de transferência!', 'success');
+        }).catch(err => {
+            console.error('Erro ao copiar:', err);
+            fallbackCopyToClipboard(text);
+        });
+    } else {
+        fallbackCopyToClipboard(text);
+    }
+}
+
+function fallbackCopyToClipboard(text) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-999999px';
+    textarea.style.top = '-999999px';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            showToast('Texto copiado!', 'success');
+        } else {
+            showToast('Erro ao copiar. Tente selecionar manualmente.', 'warning');
+        }
+    } catch (err) {
+        console.error('Fallback copy failed:', err);
+        showToast('Seu navegador não suporta cópia automática', 'warning');
+    }
+    
+    document.body.removeChild(textarea);
+}
+
+// Adicionar estilos CSS específicos para o sistema de desconto
+const discountStyles = `
+    <style>
+    .discount-card {
+        background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+        border-radius: 15px;
+        border: 2px dashed #ff6b6b;
+        transition: all 0.3s ease;
+    }
+    
+    .discount-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 25px rgba(255, 107, 107, 0.2);
+    }
+    
+    .discount-preview {
+        background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+        border-radius: 10px;
+        padding: 15px;
+        margin: 10px 0;
+        border: 1px solid #a8edea;
+        animation: fadeIn 0.5s ease-in;
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .btn-installment {
+        background: linear-gradient(135deg, #667eea 0%, #11998e 100%);
+        border: none;
+        color: white;
+        font-weight: 500;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+    }
+    
+    .btn-installment:hover {
+        color: white;
+        transform: translateY(-1px);
+        box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+    
+    .btn-installment:disabled {
+        background: #6c757d;
+        transform: none;
+        box-shadow: none;
+    }
+    
+    .installment-calculator {
+        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+        border-radius: 10px;
+        padding: 20px;
+        margin: 15px 0;
+        border: 2px dashed #667eea;
+    }
+    
+    .value-display {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #667eea;
+    }
+    
+    .parcela-preview {
+        background: white;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 10px;
+        margin: 5px 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        transition: all 0.3s ease;
+    }
+    
+    .parcela-preview:hover {
+        border-color: #667eea;
+        box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+    }
+    
+    .split-item {
+        background: #f8f9fa;
+        border: 2px dashed #dee2e6;
+        border-radius: 10px;
+        transition: all 0.3s ease;
+        position: relative;
+    }
+    
+    .split-item:hover {
+        border-color: #667eea;
+        background: rgba(102, 126, 234, 0.02);
+    }
+    
+    .toast {
+        min-width: 300px;
+    }
+    
+    .form-check-input:checked {
+        background-color: #667eea;
+        border-color: #667eea;
+    }
+    
+    .form-control:focus, .form-select:focus {
+        border-color: #667eea;
+        box-shadow: 0 0 0 0.25rem rgba(102, 126, 234, 0.15);
+    }
+    
+    .badge {
+        font-size: 0.75em;
+    }
+    
+    .table th {
+        border-top: none;
+        font-weight: 600;
+        color: #495057;
+    }
+    
+    .alert-info {
+        background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(17, 153, 142, 0.1) 100%);
+        border: 1px solid rgba(102, 126, 234, 0.2);
+    }
+    </style>
+`;
+
+// Inserir estilos na página
+document.head.insertAdjacentHTML('beforeend', discountStyles);
+
+console.log('🎯 Sistema de Desconto para Mensalidades carregado com sucesso!');
+console.log('💡 Funcionalidades ativas:');
+console.log('   ✅ Desconto por valor fixo');
+console.log('   ✅ Desconto por percentual');
+console.log('   ✅ Configuração de prazo de desconto');
+console.log('   ✅ Preview em tempo real');
+console.log('   ✅ Aplicação automática pelo ASAAS');
+
+		
     </script>
     
 </body>
