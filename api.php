@@ -1,8 +1,8 @@
 <?php
 /**
- * API.PHP - SISTEMA DE MENSALIDADES
+ * API.PHP - SISTEMA DE MENSALIDADES COM DESCONTO
  * PARTE 1/4 - CONFIGURAÇÃO E ESTRUTURA BASE
- * Versão: 3.0
+ * Versão: 4.0 - SISTEMA COMPLETO COM DESCONTO
  * Data: 2025
  */
 
@@ -26,12 +26,15 @@ error_reporting(E_ALL);
 ini_set('display_errors', 0);
 ini_set('log_errors', 1);
 
+// Incluir bootstrap do sistema
+require_once 'bootstrap.php';
+
 // Configuração do banco de dados
 class DatabaseConfig {
     const HOST = 'localhost';
-    const DB_NAME = 'mensalidades_db';
-    const USERNAME = 'root';
-    const PASSWORD = '';
+    const DB_NAME = 'bankdb';
+    const USERNAME = 'bankuser';
+    const PASSWORD = 'lKVX4Ew0u7I89hAUuDCm';
     const CHARSET = 'utf8mb4';
     
     private static $instance = null;
@@ -145,6 +148,37 @@ class Validator {
         }
         return $missing;
     }
+    
+    /**
+     * NOVO: Validar dados de desconto
+     */
+    public static function validateDiscount($discountData, $installmentValue) {
+        $errors = [];
+        
+        if (empty($discountData['type']) || !in_array($discountData['type'], ['FIXED', 'PERCENTAGE'])) {
+            $errors[] = 'Tipo de desconto inválido';
+        }
+        
+        $discountValue = floatval($discountData['value'] ?? 0);
+        if ($discountValue <= 0) {
+            $errors[] = 'Valor do desconto deve ser maior que zero';
+        }
+        
+        if ($discountData['type'] === 'FIXED' && $discountValue >= $installmentValue) {
+            $errors[] = 'Desconto fixo não pode ser maior ou igual ao valor da parcela';
+        }
+        
+        if ($discountData['type'] === 'PERCENTAGE' && $discountValue >= 100) {
+            $errors[] = 'Desconto percentual não pode ser maior ou igual a 100%';
+        }
+        
+        $validDeadlines = ['DUE_DATE', 'BEFORE_DUE_DATE', '3_DAYS_BEFORE', '5_DAYS_BEFORE'];
+        if (!in_array($discountData['deadline'], $validDeadlines)) {
+            $errors[] = 'Prazo de desconto inválido';
+        }
+        
+        return $errors;
+    }
 }
 
 // Classe para respostas da API
@@ -195,9 +229,126 @@ class ApiResponse {
     }
 }
 
-// Classe principal da API
+/**
+ * NOVA CLASSE: Gerenciador de Desconto
+ */
+class DiscountManager {
+    private $db;
+    
+    public function __construct() {
+        $this->db = DatabaseConfig::getInstance()->getConnection();
+        $this->ensureDiscountTables();
+    }
+    
+    /**
+     * Garantir que tabelas de desconto existem
+     */
+    private function ensureDiscountTables() {
+        try {
+            // Criar tabela de descontos se não existir
+            $sql = "CREATE TABLE IF NOT EXISTS installment_discounts (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                installment_id VARCHAR(100) NOT NULL,
+                discount_type ENUM('FIXED', 'PERCENTAGE') NOT NULL,
+                discount_value DECIMAL(10,2) NOT NULL,
+                discount_deadline ENUM('DUE_DATE', 'BEFORE_DUE_DATE', '3_DAYS_BEFORE', '5_DAYS_BEFORE') NOT NULL,
+                is_active BOOLEAN DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_is_active (is_active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->db->exec($sql);
+            
+            // Adicionar colunas de desconto na tabela installments se não existirem
+            $columns = [
+                'has_discount' => "ALTER TABLE installments ADD COLUMN has_discount BOOLEAN DEFAULT 0",
+                'discount_type' => "ALTER TABLE installments ADD COLUMN discount_type ENUM('FIXED', 'PERCENTAGE') NULL",
+                'discount_value' => "ALTER TABLE installments ADD COLUMN discount_value DECIMAL(10,2) NULL"
+            ];
+            
+            foreach ($columns as $column => $sql) {
+                try {
+                    $check = $this->db->query("SHOW COLUMNS FROM installments LIKE '{$column}'");
+                    if ($check->rowCount() == 0) {
+                        $this->db->exec($sql);
+                    }
+                } catch (Exception $e) {
+                    // Coluna já existe ou erro na estrutura
+                }
+            }
+            
+        } catch (Exception $e) {
+            Logger::error("Erro ao criar estrutura de desconto: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Preparar dados do desconto para API do ASAAS
+     */
+    public function prepareAsaasDiscount($discountData, $installmentValue) {
+        $discount = [];
+        
+        if ($discountData['type'] === 'FIXED') {
+            $discount['value'] = floatval($discountData['value']);
+        } else {
+            // Para percentual, calcular valor baseado na parcela
+            $discount['value'] = ($installmentValue * floatval($discountData['value'])) / 100;
+        }
+        
+        // Configurar prazo do desconto
+        switch ($discountData['deadline']) {
+            case 'DUE_DATE':
+                $discount['dueDateLimitDays'] = 0;
+                break;
+            case 'BEFORE_DUE_DATE':
+                $discount['dueDateLimitDays'] = -1;
+                break;
+            case '3_DAYS_BEFORE':
+                $discount['dueDateLimitDays'] = -3;
+                break;
+            case '5_DAYS_BEFORE':
+                $discount['dueDateLimitDays'] = -5;
+                break;
+            default:
+                $discount['dueDateLimitDays'] = 0;
+        }
+        
+        return $discount;
+    }
+    
+    /**
+     * Salvar informações do desconto no banco
+     */
+    public function saveDiscountInfo($installmentId, $discountData) {
+        try {
+            $stmt = $this->db->prepare("
+                INSERT INTO installment_discounts (
+                    installment_id, discount_type, discount_value, 
+                    discount_deadline, is_active, created_at
+                ) VALUES (?, ?, ?, ?, 1, NOW())
+            ");
+            
+            return $stmt->execute([
+                $installmentId,
+                $discountData['type'],
+                $discountData['value'],
+                $discountData['deadline']
+            ]);
+            
+        } catch (PDOException $e) {
+            Logger::error("Erro ao salvar desconto: " . $e->getMessage());
+            return false;
+        }
+    }
+}
+
+// Classe principal da API - ATUALIZADA COM DESCONTO
 class MensalidadeAPI {
     private $db;
+    private $discountManager;
     private $allowedActions = [
         'get_students',
         'get_student',
@@ -207,18 +358,23 @@ class MensalidadeAPI {
         'get_installments',
         'get_student_installments',
         'create_installment',
-        'create_installment_with_discount', // Ação corrigida
+        'create_installment_with_discount', // NOVO: Ação principal com desconto
         'update_installment',
         'delete_installment',
         'pay_installment',
         'get_dashboard_data',
         'export_data',
-        'get_reports'
+        'get_reports',
+        'get_discount_report', // NOVO: Relatório de descontos
+        'generate_payment_book_with_discount', // NOVO: Carnê com desconto
+        'get_installment_with_discount', // NOVO: Buscar mensalidade com desconto
+        'test_connection'
     ];
     
     public function __construct() {
         try {
             $this->db = DatabaseConfig::getInstance()->getConnection();
+            $this->discountManager = new DiscountManager();
         } catch (Exception $e) {
             ApiResponse::error("Erro de conexão com banco de dados");
         }
@@ -243,19 +399,21 @@ class MensalidadeAPI {
                 }
             }
             
-            // Obter ação
-            $action = $input['action'] ?? $_GET['action'] ?? null;
+            // Obter ação - verificar tanto POST quanto GET
+            $action = $input['action'] ?? $_POST['action'] ?? $_GET['action'] ?? null;
             
             if (!$action) {
                 ApiResponse::badRequest('Ação não especificada');
             }
             
             if (!in_array($action, $this->allowedActions)) {
+                Logger::warning("Ação não reconhecida: {$action}");
                 ApiResponse::badRequest("Ação não reconhecida: {$action}");
             }
             
             // Executar ação
-            $this->executeAction($action, $input ?? []);
+            $data = array_merge($_POST, $input ?? [], $_GET);
+            $this->executeAction($action, $data);
             
         } catch (Exception $e) {
             Logger::error("Erro não tratado: " . $e->getMessage(), [
@@ -296,9 +454,12 @@ class MensalidadeAPI {
             case 'create_installment':
                 $this->createInstallment($data);
                 break;
-            case 'create_installment_with_discount': // Método corrigido
+                
+            // NOVO: Ação principal para mensalidade com desconto
+            case 'create_installment_with_discount':
                 $this->createInstallmentWithDiscount($data);
                 break;
+                
             case 'update_installment':
                 $this->updateInstallment($data);
                 break;
@@ -307,6 +468,17 @@ class MensalidadeAPI {
                 break;
             case 'pay_installment':
                 $this->payInstallment($data);
+                break;
+                
+            // NOVOS: Métodos de desconto
+            case 'get_discount_report':
+                $this->getDiscountReport($data);
+                break;
+            case 'generate_payment_book_with_discount':
+                $this->generatePaymentBookWithDiscount($data);
+                break;
+            case 'get_installment_with_discount':
+                $this->getInstallmentWithDiscount($data);
                 break;
                 
             // Ações de relatórios
@@ -320,14 +492,19 @@ class MensalidadeAPI {
                 $this->getReports($data);
                 break;
                 
+            // Teste de conexão
+            case 'test_connection':
+                $this->testConnection($data);
+                break;
+                
             default:
                 ApiResponse::badRequest("Ação não implementada: {$action}");
         }
     }
 }
 /**
-     * PARTE 2/4 - MÉTODOS DE ESTUDANTES (CRUD COMPLETO)
-     * Todos os métodos para gerenciamento de estudantes
+     * PARTE 2/4 - MÉTODOS DE ESTUDANTES E MENSALIDADES BÁSICAS
+     * Todos os métodos CRUD para estudantes e mensalidades tradicionais
      */
     
     /**
@@ -735,10 +912,6 @@ class MensalidadeAPI {
             ApiResponse::error("Erro ao excluir estudante");
         }
     }
-    /**
-     * PARTE 3/4 - MÉTODOS DE MENSALIDADES (CRUD + PAGAMENTOS)
-     * Todos os métodos para gerenciamento de mensalidades e pagamentos
-     */
     
     /**
      * Listar todas as mensalidades com filtros avançados
@@ -853,107 +1026,7 @@ class MensalidadeAPI {
     }
     
     /**
-     * Obter mensalidades de um estudante específico
-     */
-    private function getStudentInstallments($data) {
-        try {
-            $studentId = $data['student_id'] ?? null;
-            
-            if (!$studentId) {
-                ApiResponse::badRequest("ID do estudante é obrigatório");
-            }
-            
-            // Verificar se estudante existe
-            $studentCheck = $this->db->prepare("SELECT id, name FROM students WHERE id = :id");
-            $studentCheck->execute(['id' => $studentId]);
-            $student = $studentCheck->fetch();
-            
-            if (!$student) {
-                ApiResponse::notFound("Estudante não encontrado");
-            }
-            
-            $sql = "SELECT 
-                        id, amount, due_date, paid_date, status, discount, 
-                        payment_method, notes, created_at,
-                        CASE 
-                            WHEN due_date < CURDATE() AND status = 'pending' THEN DATEDIFF(CURDATE(), due_date)
-                            ELSE 0
-                        END as days_overdue
-                    FROM installments 
-                    WHERE student_id = :student_id
-                    ORDER BY due_date ASC";
-            
-            $stmt = $this->db->prepare($sql);
-            $stmt->execute(['student_id' => $studentId]);
-            $installments = $stmt->fetchAll();
-            
-            // Formatar dados e calcular estatísticas
-            $stats = [
-                'total' => 0,
-                'paid' => 0,
-                'pending' => 0,
-                'overdue' => 0,
-                'total_amount' => 0,
-                'paid_amount' => 0,
-                'pending_amount' => 0,
-                'overdue_amount' => 0
-            ];
-            
-            foreach ($installments as &$installment) {
-                $amount = floatval($installment['amount']);
-                $discount = floatval($installment['discount'] ?? 0);
-                $finalAmount = $amount - $discount;
-                
-                $stats['total']++;
-                $stats['total_amount'] += $finalAmount;
-                
-                switch ($installment['status']) {
-                    case 'paid':
-                        $stats['paid']++;
-                        $stats['paid_amount'] += $finalAmount;
-                        break;
-                    case 'pending':
-                        if ($installment['days_overdue'] > 0) {
-                            $stats['overdue']++;
-                            $stats['overdue_amount'] += $finalAmount;
-                        } else {
-                            $stats['pending']++;
-                            $stats['pending_amount'] += $finalAmount;
-                        }
-                        break;
-                }
-                
-                // Formatar para resposta
-                $installment['amount'] = number_format($amount, 2, '.', '');
-                $installment['discount'] = number_format($discount, 2, '.', '');
-                $installment['final_amount'] = number_format($finalAmount, 2, '.', '');
-                $installment['due_date'] = date('d/m/Y', strtotime($installment['due_date']));
-                $installment['paid_date'] = $installment['paid_date'] ? date('d/m/Y H:i', strtotime($installment['paid_date'])) : null;
-                $installment['is_overdue'] = $installment['days_overdue'] > 0;
-            }
-            
-            // Formatar estatísticas
-            foreach (['total_amount', 'paid_amount', 'pending_amount', 'overdue_amount'] as $field) {
-                $stats[$field] = number_format($stats[$field], 2, '.', '');
-            }
-            
-            $response = [
-                'student' => $student,
-                'installments' => $installments,
-                'statistics' => $stats
-            ];
-            
-            Logger::info("Consulta mensalidades do estudante", ['student_id' => $studentId]);
-            ApiResponse::success($response, "Mensalidades do estudante encontradas");
-            
-        } catch (Exception $e) {
-            Logger::error("Erro ao buscar mensalidades do estudante: " . $e->getMessage());
-            ApiResponse::error("Erro ao buscar mensalidades do estudante");
-        }
-    }
-    
-    /**
-     * Criar nova mensalidade
+     * Criar mensalidade tradicional (sem desconto)
      */
     private function createInstallment($data) {
         try {
@@ -1030,132 +1103,750 @@ class MensalidadeAPI {
     }
     
     /**
-     * Criar mensalidade COM DESCONTO - MÉTODO CORRIGIDO
+     * Teste de conexão
+     */
+    private function testConnection($data) {
+        try {
+            // Testar conexão com banco
+            $this->db->query("SELECT 1");
+            
+            // Testar ASAAS se disponível
+            $asaasStatus = 'não testado';
+            try {
+                if (class_exists('AsaasConfig')) {
+                    $asaas = AsaasConfig::getInstance();
+                    $response = $asaas->listAccounts(1, 0);
+                    $asaasStatus = 'OK - ' . ($response['totalCount'] ?? 0) . ' contas';
+                }
+            } catch (Exception $e) {
+                $asaasStatus = 'Erro: ' . $e->getMessage();
+            }
+            
+            $testResults = [
+                'database' => 'OK',
+                'asaas' => $asaasStatus,
+                'timestamp' => date('Y-m-d H:i:s'),
+                'environment' => defined('ASAAS_ENVIRONMENT') ? ASAAS_ENVIRONMENT : 'undefined',
+                'php_version' => PHP_VERSION
+            ];
+            
+            Logger::info("Teste de conexão executado", $testResults);
+            ApiResponse::success($testResults, "Conexões testadas com sucesso");
+            
+        } catch (Exception $e) {
+            Logger::error("Erro no teste de conexão: " . $e->getMessage());
+            ApiResponse::error("Erro ao testar conexões: " . $e->getMessage());
+        }
+    }
+    /**
+     * PARTE 3/4 - SISTEMA DE MENSALIDADES COM DESCONTO
+     * Método principal e funcionalidades avançadas de desconto
+     */
+    
+    /**
+     * ===== MÉTODO PRINCIPAL: CRIAR MENSALIDADE COM DESCONTO =====
      */
     private function createInstallmentWithDiscount($data) {
         try {
-            // Validar campos obrigatórios
-            $required = ['student_id', 'amount', 'due_date', 'discount'];
-            $missing = Validator::validateRequired($data, $required);
+            Logger::info("Iniciando criação de mensalidade com desconto", ['data_keys' => array_keys($data)]);
+            
+            // Extrair dados dos formulários
+            $paymentData = $data['payment'] ?? [];
+            $installmentData = $data['installment'] ?? [];
+            $splitsData = $data['splits'] ?? [];
+            $discountData = $data['discount'] ?? [];
+            
+            // Validar dados básicos do pagamento
+            $requiredPaymentFields = ['customer', 'billingType', 'description', 'dueDate'];
+            $missing = Validator::validateRequired($paymentData, $requiredPaymentFields);
             
             if (!empty($missing)) {
-                ApiResponse::badRequest("Campos obrigatórios faltando", $missing);
+                ApiResponse::badRequest("Campos obrigatórios do pagamento faltando", $missing);
             }
             
-            // Validações específicas
-            $errors = [];
+            // Validar dados do parcelamento
+            $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
+            $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
             
-            if (!Validator::validateMoney($data['amount'])) {
-                $errors[] = "Valor inválido";
+            if ($installmentCount < 2 || $installmentCount > 24) {
+                ApiResponse::badRequest('Número de parcelas deve ser entre 2 e 24');
             }
             
-            if (!Validator::validateMoney($data['discount'])) {
-                $errors[] = "Desconto inválido";
+            if ($installmentValue <= 0) {
+                ApiResponse::badRequest('Valor da parcela deve ser maior que zero');
             }
             
-            if (!Validator::validateDate($data['due_date'])) {
-                $errors[] = "Data de vencimento inválida";
+            // Validar data de vencimento
+            $dueDate = $paymentData['dueDate'];
+            if (strtotime($dueDate) < strtotime(date('Y-m-d'))) {
+                ApiResponse::badRequest('Data de vencimento não pode ser anterior a hoje');
             }
             
-            // Validar se desconto não é maior que o valor
-            if (floatval($data['discount']) > floatval($data['amount'])) {
-                $errors[] = "Desconto não pode ser maior que o valor da mensalidade";
+            // Processar desconto se habilitado
+            $processedDiscountData = null;
+            $discountForAsaas = null;
+            
+            if (!empty($discountData['enabled']) && $discountData['enabled'] === 'true') {
+                Logger::info("Processando desconto", ['discount_data' => $discountData]);
+                
+                $processedDiscountData = [
+                    'enabled' => true,
+                    'type' => $discountData['type'] ?? 'FIXED',
+                    'value' => floatval($discountData['value'] ?? 0),
+                    'deadline' => $discountData['deadline'] ?? 'DUE_DATE'
+                ];
+                
+                // Validar dados do desconto
+                $discountErrors = Validator::validateDiscount($processedDiscountData, $installmentValue);
+                if (!empty($discountErrors)) {
+                    ApiResponse::badRequest("Dados de desconto inválidos", $discountErrors);
+                }
+                
+                // Preparar desconto para ASAAS
+                $discountForAsaas = $this->discountManager->prepareAsaasDiscount($processedDiscountData, $installmentValue);
+                $paymentData['discount'] = $discountForAsaas;
+                
+                Logger::info("Desconto preparado para ASAAS", ['discount_asaas' => $discountForAsaas]);
             }
             
-            if (!empty($errors)) {
-                ApiResponse::badRequest("Dados inválidos", $errors);
+            // Processar splits
+            $processedSplits = [];
+            $totalPercentage = 0;
+            $totalFixedValue = 0;
+            
+            foreach ($splitsData as $split) {
+                if (!empty($split['walletId'])) {
+                    $splitData = ['walletId' => $split['walletId']];
+                    
+                    if (!empty($split['percentualValue']) && floatval($split['percentualValue']) > 0) {
+                        $percentage = floatval($split['percentualValue']);
+                        if ($percentage > 100) {
+                            ApiResponse::badRequest('Percentual de split não pode ser maior que 100%');
+                        }
+                        $splitData['percentualValue'] = $percentage;
+                        $totalPercentage += $percentage;
+                    }
+                    
+                    if (!empty($split['fixedValue']) && floatval($split['fixedValue']) > 0) {
+                        $fixedValue = floatval($split['fixedValue']);
+                        if ($fixedValue >= $installmentValue) {
+                            ApiResponse::badRequest('Valor fixo do split não pode ser maior ou igual ao valor da parcela');
+                        }
+                        $splitData['fixedValue'] = $fixedValue;
+                        $totalFixedValue += $fixedValue;
+                    }
+                    
+                    $processedSplits[] = $splitData;
+                }
+            }
+            
+            // Validar splits
+            if (!empty($processedSplits)) {
+                if ($totalPercentage > 100) {
+                    ApiResponse::badRequest('A soma dos percentuais não pode exceder 100%');
+                }
+                
+                if ($totalFixedValue >= $installmentValue) {
+                    ApiResponse::badRequest('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
+                }
+            }
+            
+            Logger::info("Dados validados, criando no ASAAS", [
+                'installment_count' => $installmentCount,
+                'installment_value' => $installmentValue,
+                'has_discount' => !empty($processedDiscountData),
+                'splits_count' => count($processedSplits)
+            ]);
+            
+            // Criar mensalidade via API ASAAS
+            try {
+                // Usar configuração dinâmica existente
+                if (class_exists('DynamicAsaasConfig')) {
+                    $dynamicConfig = new DynamicAsaasConfig();
+                    $asaas = $dynamicConfig->getInstance();
+                } else {
+                    $asaas = AsaasConfig::getInstance();
+                }
+                
+                // Criar parcelamento via ASAAS
+                $result = $asaas->createInstallmentPaymentWithSplit($paymentData, $processedSplits, $installmentData);
+                
+                Logger::info("Mensalidade criada no ASAAS", ['installment_id' => $result['installment']]);
+                
+            } catch (Exception $e) {
+                Logger::error("Erro na API ASAAS: " . $e->getMessage());
+                throw new Exception('Erro ao criar mensalidade: ' . $e->getMessage());
+            }
+            
+            // Salvar no banco de dados local
+            $this->db->beginTransaction();
+            
+            try {
+                // Salvar informações do parcelamento principal
+                $installmentRecord = [
+                    'installment_id' => $result['installment'],
+                    'polo_id' => $_SESSION['polo_id'] ?? null,
+                    'customer_id' => $result['customer'],
+                    'installment_count' => $installmentCount,
+                    'installment_value' => $installmentValue,
+                    'total_value' => $installmentCount * $installmentValue,
+                    'first_due_date' => $paymentData['dueDate'],
+                    'billing_type' => $paymentData['billingType'],
+                    'description' => $paymentData['description'],
+                    'has_splits' => !empty($processedSplits),
+                    'splits_count' => count($processedSplits),
+                    'created_by' => $_SESSION['usuario_id'] ?? null,
+                    'first_payment_id' => $result['id'],
+                    'has_discount' => !empty($processedDiscountData),
+                    'discount_type' => isset($processedDiscountData['type']) ? $processedDiscountData['type'] : null,
+                    'discount_value' => isset($processedDiscountData['value']) ? $processedDiscountData['value'] : null
+                ];
+                
+                // Inserir registro de parcelamento
+                $this->saveInstallmentRecord($installmentRecord);
+                
+                // Salvar informações detalhadas do desconto se houver
+                if (!empty($processedDiscountData)) {
+                    $this->discountManager->saveDiscountInfo($result['installment'], $processedDiscountData);
+                }
+                
+                // Salvar splits se houver
+                if (!empty($processedSplits)) {
+                    $this->savePaymentSplits($result['id'], $processedSplits);
+                }
+                
+                $this->db->commit();
+                Logger::info("Dados salvos no banco local");
+                
+            } catch (Exception $e) {
+                $this->db->rollBack();
+                Logger::error("Erro ao salvar no banco: " . $e->getMessage());
+                throw new Exception('Erro ao salvar dados localmente: ' . $e->getMessage());
+            }
+            
+            // Calcular informações para resposta
+            $totalValue = $installmentCount * $installmentValue;
+            $discountPerInstallment = 0;
+            $totalSavings = 0;
+            $finalInstallmentValue = $installmentValue;
+            
+            if ($processedDiscountData && $processedDiscountData['enabled']) {
+                if ($processedDiscountData['type'] === 'FIXED') {
+                    $discountPerInstallment = $processedDiscountData['value'];
+                } else {
+                    $discountPerInstallment = ($installmentValue * $processedDiscountData['value']) / 100;
+                }
+                $totalSavings = $discountPerInstallment * $installmentCount;
+                $finalInstallmentValue = $installmentValue - $discountPerInstallment;
+            }
+            
+            // Preparar mensagem de sucesso detalhada
+            $successMessage = "✅ Mensalidade com desconto criada com sucesso!<br>";
+            $successMessage .= "<strong>{$installmentCount} parcelas de R$ " . number_format($installmentValue, 2, ',', '.') . "</strong><br>";
+            $successMessage .= "Total original: R$ " . number_format($totalValue, 2, ',', '.') . "<br>";
+            
+            if ($totalSavings > 0) {
+                $successMessage .= "Valor com desconto: R$ " . number_format($finalInstallmentValue, 2, ',', '.') . " por parcela<br>";
+                $successMessage .= "<span class='text-success'>💰 Economia total: R$ " . number_format($totalSavings, 2, ',', '.') . "</span><br>";
+            }
+            
+            $successMessage .= "Primeiro vencimento: " . date('d/m/Y', strtotime($paymentData['dueDate']));
+            
+            if (!empty($result['invoiceUrl'])) {
+                $successMessage .= "<br><a href='{$result['invoiceUrl']}' target='_blank' class='btn btn-sm btn-outline-primary mt-2'><i class='bi bi-eye'></i> Ver 1ª Parcela</a>";
+            }
+            
+            $responseData = [
+                'installment_data' => $result,
+                'discount_info' => $processedDiscountData,
+                'total_savings' => $totalSavings,
+                'discount_per_installment' => $discountPerInstallment,
+                'final_installment_value' => $finalInstallmentValue,
+                'installment_count' => $installmentCount,
+                'total_value' => $totalValue,
+                'splits_applied' => count($processedSplits)
+            ];
+            
+            Logger::info("Mensalidade com desconto criada com sucesso", [
+                'installment_id' => $result['installment'],
+                'total_savings' => $totalSavings,
+                'discount_type' => $processedDiscountData['type'] ?? 'none'
+            ]);
+            
+            ApiResponse::success($responseData, $successMessage, 201);
+            
+        } catch (Exception $e) {
+            Logger::error("Erro ao criar mensalidade com desconto: " . $e->getMessage());
+            ApiResponse::error($e->getMessage());
+        }
+    }
+    
+    /**
+     * Salvar registro de parcelamento no banco
+     */
+    private function saveInstallmentRecord($installmentRecord) {
+        // Garantir que tabela installments existe
+        $this->ensureInstallmentsTable();
+        
+        $sql = "INSERT INTO installments (
+            installment_id, polo_id, customer_id, installment_count, 
+            installment_value, total_value, first_due_date, billing_type, 
+            description, has_splits, splits_count, created_by, 
+            first_payment_id, has_discount, discount_type, discount_value, 
+            status, created_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW()
+        )";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            $installmentRecord['installment_id'],
+            $installmentRecord['polo_id'],
+            $installmentRecord['customer_id'],
+            $installmentRecord['installment_count'],
+            $installmentRecord['installment_value'],
+            $installmentRecord['total_value'],
+            $installmentRecord['first_due_date'],
+            $installmentRecord['billing_type'],
+            $installmentRecord['description'],
+            $installmentRecord['has_splits'] ? 1 : 0,
+            $installmentRecord['splits_count'],
+            $installmentRecord['created_by'],
+            $installmentRecord['first_payment_id'],
+            $installmentRecord['has_discount'] ? 1 : 0,
+            $installmentRecord['discount_type'],
+            $installmentRecord['discount_value']
+        ]);
+    }
+    
+    /**
+     * Garantir que tabela installments existe
+     */
+    private function ensureInstallmentsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS installments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                installment_id VARCHAR(100) NOT NULL UNIQUE,
+                polo_id INT NULL,
+                customer_id VARCHAR(100) NOT NULL,
+                installment_count INT NOT NULL,
+                installment_value DECIMAL(10,2) NOT NULL,
+                total_value DECIMAL(10,2) NOT NULL,
+                first_due_date DATE NOT NULL,
+                billing_type VARCHAR(20) NOT NULL,
+                description TEXT,
+                has_splits BOOLEAN DEFAULT 0,
+                splits_count INT DEFAULT 0,
+                created_by INT,
+                first_payment_id VARCHAR(100),
+                has_discount BOOLEAN DEFAULT 0,
+                discount_type ENUM('FIXED', 'PERCENTAGE') NULL,
+                discount_value DECIMAL(10,2) NULL,
+                status ENUM('ACTIVE', 'CANCELLED', 'COMPLETED') DEFAULT 'ACTIVE',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_customer_id (customer_id),
+                INDEX idx_status (status),
+                INDEX idx_has_discount (has_discount),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->db->exec($sql);
+        } catch (Exception $e) {
+            Logger::error("Erro ao criar tabela installments: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Salvar splits de pagamento
+     */
+    private function savePaymentSplits($paymentId, $splits) {
+        try {
+            // Criar tabela se não existir
+            $this->ensurePaymentSplitsTable();
+            
+            // Remover splits existentes
+            $deleteStmt = $this->db->prepare("DELETE FROM payment_splits WHERE payment_id = ?");
+            $deleteStmt->execute([$paymentId]);
+            
+            // Inserir novos splits
+            $insertStmt = $this->db->prepare("
+                INSERT INTO payment_splits (payment_id, wallet_id, split_type, percentage_value, fixed_value) 
+                VALUES (?, ?, ?, ?, ?)
+            ");
+            
+            foreach ($splits as $split) {
+                $splitType = isset($split['fixedValue']) ? 'FIXED' : 'PERCENTAGE';
+                $percentageValue = isset($split['percentualValue']) ? $split['percentualValue'] : null;
+                $fixedValue = isset($split['fixedValue']) ? $split['fixedValue'] : null;
+                
+                $insertStmt->execute([
+                    $paymentId,
+                    $split['walletId'],
+                    $splitType,
+                    $percentageValue,
+                    $fixedValue
+                ]);
+            }
+            
+            return true;
+        } catch (PDOException $e) {
+            Logger::error("Erro ao salvar splits: " . $e->getMessage());
+            return false;
+        }
+    }
+    
+    /**
+     * Garantir que tabela payment_splits existe
+     */
+    private function ensurePaymentSplitsTable() {
+        try {
+            $sql = "CREATE TABLE IF NOT EXISTS payment_splits (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                payment_id VARCHAR(100) NOT NULL,
+                wallet_id VARCHAR(100) NOT NULL,
+                split_type ENUM('PERCENTAGE', 'FIXED') NOT NULL,
+                percentage_value DECIMAL(5,2) NULL,
+                fixed_value DECIMAL(10,2) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                INDEX idx_payment_id (payment_id),
+                INDEX idx_wallet_id (wallet_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            
+            $this->db->exec($sql);
+        } catch (Exception $e) {
+            Logger::error("Erro ao criar tabela payment_splits: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Buscar mensalidade com informações de desconto
+     */
+    private function getInstallmentWithDiscount($data) {
+        try {
+            $installmentId = $data['installment_id'] ?? null;
+            
+            if (!$installmentId) {
+                ApiResponse::badRequest("ID da mensalidade é obrigatório");
+            }
+            
+            // Buscar informações da mensalidade
+            $installmentSql = "SELECT * FROM installments WHERE installment_id = ?";
+            $installmentStmt = $this->db->prepare($installmentSql);
+            $installmentStmt->execute([$installmentId]);
+            $installment = $installmentStmt->fetch();
+            
+            if (!$installment) {
+                ApiResponse::notFound("Mensalidade não encontrada");
+            }
+            
+            // Buscar informações de desconto se houver
+            $discountInfo = null;
+            if ($installment['has_discount']) {
+                $discountInfo = $this->discountManager->getInstallmentDiscount($installmentId);
+            }
+            
+            // Buscar parcelas do ASAAS
+            $payments = [];
+            try {
+                if (class_exists('DynamicAsaasConfig')) {
+                    $dynamicConfig = new DynamicAsaasConfig();
+                    $asaas = $dynamicConfig->getInstance();
+                } else {
+                    $asaas = AsaasConfig::getInstance();
+                }
+                
+                $paymentsResponse = $asaas->getInstallmentPayments($installmentId);
+                $payments = $paymentsResponse['data'] ?? [];
+                
+            } catch (Exception $e) {
+                Logger::warning("Erro ao buscar parcelas no ASAAS: " . $e->getMessage());
+            }
+            
+            $responseData = [
+                'installment' => $installment,
+                'discount_info' => $discountInfo,
+                'payments' => $payments,
+                'summary' => [
+                    'total_payments' => count($payments),
+                    'has_discount' => (bool)$installment['has_discount'],
+                    'discount_type' => $installment['discount_type'],
+                    'discount_value' => $installment['discount_value']
+                ]
+            ];
+            
+            ApiResponse::success($responseData, "Mensalidade encontrada");
+            
+        } catch (Exception $e) {
+            Logger::error("Erro ao buscar mensalidade: " . $e->getMessage());
+            ApiResponse::error("Erro ao buscar mensalidade");
+        }
+    }
+    
+    /**
+     * Gerar carnê em PDF com informações de desconto
+     */
+    private function generatePaymentBookWithDiscount($data) {
+        try {
+            $installmentId = $data['installment_id'] ?? null;
+            
+            if (!$installmentId) {
+                ApiResponse::badRequest("ID da mensalidade é obrigatório");
+            }
+            
+            // Verificar se mensalidade existe
+            $installmentCheck = $this->db->prepare("SELECT * FROM installments WHERE installment_id = ?");
+            $installmentCheck->execute([$installmentId]);
+            $installment = $installmentCheck->fetch();
+            
+            if (!$installment) {
+                ApiResponse::notFound("Mensalidade não encontrada");
+            }
+            
+            // Gerar carnê via ASAAS
+            try {
+                if (class_exists('DynamicAsaasConfig')) {
+                    $dynamicConfig = new DynamicAsaasConfig();
+                    $asaas = $dynamicConfig->getInstance();
+                } else {
+                    $asaas = AsaasConfig::getInstance();
+                }
+                
+                $carneResult = $asaas->generateInstallmentPaymentBook($installmentId);
+                
+                if ($carneResult['success']) {
+                    // Salvar PDF temporariamente para download
+                    $fileName = "carne_mensalidade_{$installmentId}_" . date('Y-m-d_H-i-s') . ".pdf";
+                    $filePath = __DIR__ . '/downloads/' . $fileName;
+                    
+                    // Criar diretório se não existir
+                    $downloadDir = dirname($filePath);
+                    if (!is_dir($downloadDir)) {
+                        mkdir($downloadDir, 0755, true);
+                    }
+                    
+                    file_put_contents($filePath, $carneResult['pdf_content']);
+                    
+                    $responseData = [
+                        'file_name' => $fileName,
+                        'download_url' => 'downloads/' . $fileName,
+                        'file_size' => filesize($filePath),
+                        'installment_info' => [
+                            'installment_id' => $installmentId,
+                            'has_discount' => (bool)$installment['has_discount'],
+                            'discount_type' => $installment['discount_type']
+                        ]
+                    ];
+                    
+                    Logger::info("Carnê gerado com desconto", ['installment_id' => $installmentId, 'file' => $fileName]);
+                    ApiResponse::success($responseData, "Carnê gerado com sucesso");
+                } else {
+                    throw new Exception("Falha ao gerar carnê no ASAAS");
+                }
+                
+            } catch (Exception $e) {
+                Logger::error("Erro ao gerar carnê: " . $e->getMessage());
+                throw new Exception("Erro ao gerar carnê: " . $e->getMessage());
+            }
+            
+        } catch (Exception $e) {
+            Logger::error("Erro ao processar geração de carnê: " . $e->getMessage());
+            ApiResponse::error($e->getMessage());
+        }
+    }
+    
+    /**
+     * Obter relatório de descontos aplicados
+     */
+    private function getDiscountReport($data) {
+        try {
+            $startDate = $data['start_date'] ?? date('Y-m-01');
+            $endDate = $data['end_date'] ?? date('Y-m-d');
+            $poloId = $data['polo_id'] ?? ($_SESSION['polo_id'] ?? null);
+            
+            $whereClause = "WHERE i.created_at BETWEEN ? AND ? AND i.has_discount = 1";
+            $params = [$startDate, $endDate];
+            
+            if ($poloId) {
+                $whereClause .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $sql = "
+                SELECT 
+                    i.*,
+                    id.discount_type as detail_discount_type,
+                    id.discount_value as detail_discount_value,
+                    id.discount_deadline,
+                    c.name as customer_name,
+                    (i.installment_value * i.installment_count) as total_original_value,
+                    CASE 
+                        WHEN i.discount_type = 'FIXED' THEN 
+                            (i.discount_value * i.installment_count)
+                        ELSE 
+                            ((i.installment_value * i.discount_value / 100) * i.installment_count)
+                    END as total_discount_amount
+                FROM installments i
+                LEFT JOIN installment_discounts id ON i.installment_id = id.installment_id
+                LEFT JOIN customers c ON i.customer_id = c.id
+                {$whereClause}
+                ORDER BY i.created_at DESC
+            ";
+            
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute($params);
+            $reportData = $stmt->fetchAll();
+            
+            // Calcular totais
+            $totalInstallments = count($reportData);
+            $totalOriginalValue = 0;
+            $totalDiscountAmount = 0;
+            
+            foreach ($reportData as &$row) {
+                $totalOriginalValue += $row['total_original_value'];
+                $totalDiscountAmount += $row['total_discount_amount'];
+                
+                // Formatar valores
+                $row['total_original_value'] = number_format($row['total_original_value'], 2, '.', '');
+                $row['total_discount_amount'] = number_format($row['total_discount_amount'], 2, '.', '');
+                $row['installment_value'] = number_format($row['installment_value'], 2, '.', '');
+            }
+            
+            $summary = [
+                'total_installments' => $totalInstallments,
+                'total_original_value' => number_format($totalOriginalValue, 2, '.', ''),
+                'total_discount_amount' => number_format($totalDiscountAmount, 2, '.', ''),
+                'average_discount_per_installment' => $totalInstallments > 0 ? 
+                    number_format($totalDiscountAmount / $totalInstallments, 2, '.', '') : '0.00',
+                'discount_percentage' => $totalOriginalValue > 0 ? 
+                    round(($totalDiscountAmount / $totalOriginalValue) * 100, 2) : 0
+            ];
+            
+            $responseData = [
+                'report' => $reportData,
+                'summary' => $summary,
+                'period' => ['start' => $startDate, 'end' => $endDate],
+                'polo_context' => $poloId ? ($_SESSION['polo_nome'] ?? 'Polo ID: ' . $poloId) : 'Todos os polos'
+            ];
+            
+            Logger::info("Relatório de descontos gerado", [
+                'total_installments' => $totalInstallments,
+                'period' => "$startDate a $endDate"
+            ]);
+            
+            ApiResponse::success($responseData, "Relatório de descontos gerado com sucesso");
+            
+        } catch (Exception $e) {
+            Logger::error("Erro ao gerar relatório de descontos: " . $e->getMessage());
+            ApiResponse::error("Erro ao gerar relatório de descontos");
+        }
+    }
+    /**
+     * PARTE 4/4 - DASHBOARD, RELATÓRIOS E FINALIZAÇÃO
+     * Métodos para dashboard, relatórios, exportação e funcionalidades complementares
+     */
+    
+    /**
+     * Obter mensalidades de um estudante específico
+     */
+    private function getStudentInstallments($data) {
+        try {
+            $studentId = $data['student_id'] ?? null;
+            
+            if (!$studentId) {
+                ApiResponse::badRequest("ID do estudante é obrigatório");
             }
             
             // Verificar se estudante existe
             $studentCheck = $this->db->prepare("SELECT id, name FROM students WHERE id = :id");
-            $studentCheck->execute(['id' => $data['student_id']]);
+            $studentCheck->execute(['id' => $studentId]);
             $student = $studentCheck->fetch();
             
             if (!$student) {
-                ApiResponse::badRequest("Estudante não encontrado");
+                ApiResponse::notFound("Estudante não encontrado");
             }
             
-            $this->db->beginTransaction();
+            $sql = "SELECT 
+                        id, amount, due_date, paid_date, status, discount, 
+                        payment_method, notes, created_at,
+                        CASE 
+                            WHEN due_date < CURDATE() AND status = 'pending' THEN DATEDIFF(CURDATE(), due_date)
+                            ELSE 0
+                        END as days_overdue
+                    FROM installments 
+                    WHERE student_id = :student_id
+                    ORDER BY due_date ASC";
             
-            try {
-                // Calcular valor final
-                $originalAmount = floatval($data['amount']);
-                $discount = floatval($data['discount']);
-                $finalAmount = $originalAmount - $discount;
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute(['student_id' => $studentId]);
+            $installments = $stmt->fetchAll();
+            
+            // Calcular estatísticas
+            $stats = [
+                'total' => 0,
+                'paid' => 0,
+                'pending' => 0,
+                'overdue' => 0,
+                'total_amount' => 0,
+                'paid_amount' => 0,
+                'pending_amount' => 0,
+                'overdue_amount' => 0
+            ];
+            
+            foreach ($installments as &$installment) {
+                $amount = floatval($installment['amount']);
+                $discount = floatval($installment['discount'] ?? 0);
+                $finalAmount = $amount - $discount;
                 
-                // Preparar dados
-                $installmentData = [
-                    'student_id' => $data['student_id'],
-                    'amount' => $originalAmount,
-                    'due_date' => $data['due_date'],
-                    'status' => 'pending',
-                    'discount' => $discount,
-                    'discount_reason' => Validator::sanitizeString($data['discount_reason'] ?? 'Desconto aplicado'),
-                    'notes' => Validator::sanitizeString($data['notes'] ?? ''),
-                    'created_at' => date('Y-m-d H:i:s'),
-                    'updated_at' => date('Y-m-d H:i:s')
-                ];
+                $stats['total']++;
+                $stats['total_amount'] += $finalAmount;
                 
-                // Inserir mensalidade
-                $sql = "INSERT INTO installments (student_id, amount, due_date, status, discount, discount_reason, notes, created_at, updated_at) 
-                        VALUES (:student_id, :amount, :due_date, :status, :discount, :discount_reason, :notes, :created_at, :updated_at)";
+                switch ($installment['status']) {
+                    case 'paid':
+                        $stats['paid']++;
+                        $stats['paid_amount'] += $finalAmount;
+                        break;
+                    case 'pending':
+                        if ($installment['days_overdue'] > 0) {
+                            $stats['overdue']++;
+                            $stats['overdue_amount'] += $finalAmount;
+                        } else {
+                            $stats['pending']++;
+                            $stats['pending_amount'] += $finalAmount;
+                        }
+                        break;
+                }
                 
-                $stmt = $this->db->prepare($sql);
-                $stmt->execute($installmentData);
-                
-                $installmentId = $this->db->lastInsertId();
-                
-                // Log do desconto aplicado
-                $logSql = "INSERT INTO discount_logs (installment_id, original_amount, discount_amount, final_amount, reason, applied_by, applied_at)
-                          VALUES (:installment_id, :original_amount, :discount_amount, :final_amount, :reason, :applied_by, :applied_at)";
-                
-                $logStmt = $this->db->prepare($logSql);
-                $logStmt->execute([
-                    'installment_id' => $installmentId,
-                    'original_amount' => $originalAmount,
-                    'discount_amount' => $discount,
-                    'final_amount' => $finalAmount,
-                    'reason' => $installmentData['discount_reason'],
-                    'applied_by' => $data['user'] ?? 'sistema',
-                    'applied_at' => date('Y-m-d H:i:s')
-                ]);
-                
-                $this->db->commit();
-                
-                // Buscar mensalidade criada com desconto
-                $createdStmt = $this->db->prepare("
-                    SELECT i.*, s.name as student_name,
-                           (i.amount - i.discount) as final_amount
-                    FROM installments i 
-                    LEFT JOIN students s ON i.student_id = s.id 
-                    WHERE i.id = :id
-                ");
-                $createdStmt->execute(['id' => $installmentId]);
-                $installment = $createdStmt->fetch();
-                
-                // Formatar valores
-                $installment['amount'] = number_format($installment['amount'], 2, '.', '');
-                $installment['discount'] = number_format($installment['discount'], 2, '.', '');
-                $installment['final_amount'] = number_format($installment['final_amount'], 2, '.', '');
-                
-                Logger::info("Mensalidade com desconto criada", [
-                    'installment_id' => $installmentId,
-                    'student_id' => $data['student_id'],
-                    'original_amount' => $originalAmount,
-                    'discount' => $discount,
-                    'final_amount' => $finalAmount
-                ]);
-                
-                ApiResponse::success($installment, "Mensalidade com desconto criada com sucesso", 201);
-                
-            } catch (Exception $e) {
-                $this->db->rollBack();
-                throw $e;
+                // Formatar para resposta
+                $installment['amount'] = number_format($amount, 2, '.', '');
+                $installment['discount'] = number_format($discount, 2, '.', '');
+                $installment['final_amount'] = number_format($finalAmount, 2, '.', '');
+                $installment['due_date'] = date('d/m/Y', strtotime($installment['due_date']));
+                $installment['paid_date'] = $installment['paid_date'] ? date('d/m/Y H:i', strtotime($installment['paid_date'])) : null;
+                $installment['is_overdue'] = $installment['days_overdue'] > 0;
             }
+            
+            // Formatar estatísticas
+            foreach (['total_amount', 'paid_amount', 'pending_amount', 'overdue_amount'] as $field) {
+                $stats[$field] = number_format($stats[$field], 2, '.', '');
+            }
+            
+            $response = [
+                'student' => $student,
+                'installments' => $installments,
+                'statistics' => $stats
+            ];
+            
+            Logger::info("Consulta mensalidades do estudante", ['student_id' => $studentId]);
+            ApiResponse::success($response, "Mensalidades do estudante encontradas");
             
         } catch (Exception $e) {
-            Logger::error("Erro ao criar mensalidade com desconto: " . $e->getMessage());
-            ApiResponse::error("Erro ao criar mensalidade com desconto");
+            Logger::error("Erro ao buscar mensalidades do estudante: " . $e->getMessage());
+            ApiResponse::error("Erro ao buscar mensalidades do estudante");
         }
     }
     
@@ -1359,25 +2050,30 @@ class MensalidadeAPI {
                     'updated_at' => date('Y-m-d H:i:s')
                 ]);
                 
-                // Registrar log de pagamento
-                $logStmt = $this->db->prepare("
-                    INSERT INTO payment_logs (installment_id, student_id, amount, discount, final_amount, payment_method, paid_date, processed_by, processed_at)
-                    VALUES (:installment_id, :student_id, :amount, :discount, :final_amount, :payment_method, :paid_date, :processed_by, :processed_at)
-                ");
-                
-                $finalAmount = floatval($installment['amount']) - floatval($installment['discount'] ?? 0);
-                
-                $logStmt->execute([
-                    'installment_id' => $installmentId,
-                    'student_id' => $installment['student_id'],
-                    'amount' => $installment['amount'],
-                    'discount' => $installment['discount'] ?? 0,
-                    'final_amount' => $finalAmount,
-                    'payment_method' => $paymentMethod,
-                    'paid_date' => $paymentDate,
-                    'processed_by' => $data['user'] ?? 'sistema',
-                    'processed_at' => date('Y-m-d H:i:s')
-                ]);
+                // Registrar log de pagamento se tabela existir
+                try {
+                    $logStmt = $this->db->prepare("
+                        INSERT INTO payment_logs (installment_id, student_id, amount, discount, final_amount, payment_method, paid_date, processed_by, processed_at)
+                        VALUES (:installment_id, :student_id, :amount, :discount, :final_amount, :payment_method, :paid_date, :processed_by, :processed_at)
+                    ");
+                    
+                    $finalAmount = floatval($installment['amount']) - floatval($installment['discount'] ?? 0);
+                    
+                    $logStmt->execute([
+                        'installment_id' => $installmentId,
+                        'student_id' => $installment['student_id'],
+                        'amount' => $installment['amount'],
+                        'discount' => $installment['discount'] ?? 0,
+                        'final_amount' => $finalAmount,
+                        'payment_method' => $paymentMethod,
+                        'paid_date' => $paymentDate,
+                        'processed_by' => $_SESSION['usuario_id'] ?? 'sistema',
+                        'processed_at' => date('Y-m-d H:i:s')
+                    ]);
+                } catch (Exception $e) {
+                    // Log opcional - não interromper o processo
+                    Logger::warning("Erro ao criar log de pagamento: " . $e->getMessage());
+                }
                 
                 $this->db->commit();
                 
@@ -1400,8 +2096,8 @@ class MensalidadeAPI {
                 
                 Logger::info("Pagamento processado", [
                     'installment_id' => $installmentId,
-                    'student_name' => $installment['student_name'],
-                    'amount' => $finalAmount,
+                    'student_name' => $installment['student_name'] ?? 'N/A',
+                    'amount' => $finalAmount ?? 0,
                     'payment_method' => $paymentMethod
                 ]);
                 
@@ -1417,18 +2113,23 @@ class MensalidadeAPI {
             ApiResponse::error("Erro ao processar pagamento");
         }
     }
-    /**
-     * PARTE 4/4 - DASHBOARD, RELATÓRIOS E FINALIZAÇÃO
-     * Métodos para dashboard, relatórios, exportação e inicialização
-     */
     
     /**
-     * Obter dados do dashboard com estatísticas completas
+     * Obter dados do dashboard com estatísticas completas incluindo descontos
      */
     private function getDashboardData($data) {
         try {
             $month = $data['month'] ?? date('m');
             $year = $data['year'] ?? date('Y');
+            $poloId = $_SESSION['polo_id'] ?? null;
+            
+            // Adicionar filtro de polo se não for master
+            $poloFilter = '';
+            $poloParams = [];
+            if ($poloId && !($_SESSION['usuario_tipo'] ?? '') === 'master') {
+                $poloFilter = 'WHERE polo_id = :polo_id';
+                $poloParams['polo_id'] = $poloId;
+            }
             
             // Estatísticas gerais
             $generalStats = $this->db->prepare("
@@ -1441,11 +2142,17 @@ class MensalidadeAPI {
                     COUNT(CASE WHEN i.status = 'pending' AND i.due_date < CURDATE() THEN 1 END) as overdue_installments,
                     COALESCE(SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as total_received,
                     COALESCE(SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as total_pending,
-                    COALESCE(SUM(CASE WHEN i.status = 'pending' AND i.due_date < CURDATE() THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as total_overdue
+                    COALESCE(SUM(CASE WHEN i.status = 'pending' AND i.due_date < CURDATE() THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as total_overdue,
+                    COUNT(CASE WHEN i.has_discount = 1 THEN 1 END) as installments_with_discount,
+                    COALESCE(SUM(CASE WHEN i.has_discount = 1 THEN 
+                        CASE WHEN i.discount_type = 'FIXED' THEN i.discount_value * i.installment_count
+                        ELSE (i.installment_value * i.discount_value / 100) * i.installment_count END
+                    END), 0) as total_discount_applied
                 FROM students s
                 LEFT JOIN installments i ON s.id = i.student_id
-            ");
-            $generalStats->execute();
+                " . ($poloFilter ? str_replace('polo_id', 's.polo_id', $poloFilter) : '')
+            );
+            $generalStats->execute($poloParams);
             $stats = $generalStats->fetch();
             
             // Estatísticas do mês atual
@@ -1456,11 +2163,14 @@ class MensalidadeAPI {
                     COUNT(CASE WHEN i.status = 'pending' THEN 1 END) as monthly_pending,
                     COUNT(CASE WHEN i.status = 'pending' AND i.due_date < CURDATE() THEN 1 END) as monthly_overdue,
                     COALESCE(SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as monthly_received,
-                    COALESCE(SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as monthly_pending_amount
+                    COALESCE(SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as monthly_pending_amount,
+                    COUNT(CASE WHEN i.has_discount = 1 THEN 1 END) as monthly_with_discount
                 FROM installments i
                 WHERE MONTH(i.due_date) = :month AND YEAR(i.due_date) = :year
-            ");
-            $monthlyStats->execute(['month' => $month, 'year' => $year]);
+                " . ($poloId ? 'AND i.polo_id = :polo_id' : '')
+            );
+            $monthlyParams = array_merge(['month' => $month, 'year' => $year], $poloParams);
+            $monthlyStats->execute($monthlyParams);
             $monthlyData = $monthlyStats->fetch();
             
             // Receitas dos últimos 6 meses
@@ -1471,62 +2181,66 @@ class MensalidadeAPI {
                     COALESCE(SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as pending
                 FROM installments i
                 WHERE i.due_date >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
+                " . ($poloId ? 'AND i.polo_id = :polo_id' : '') . "
                 GROUP BY DATE_FORMAT(i.due_date, '%Y-%m')
                 ORDER BY month ASC
             ");
-            $revenueChart->execute();
+            $revenueChart->execute($poloParams);
             $revenueData = $revenueChart->fetchAll();
             
-            // Top cursos por receita
+            // Top cursos por receita (buscar da tabela installments via customers)
             $topCourses = $this->db->prepare("
                 SELECT 
-                    s.course,
-                    COUNT(DISTINCT s.id) as students_count,
+                    c.course,
+                    COUNT(DISTINCT c.id) as students_count,
                     COUNT(i.id) as total_installments,
                     COALESCE(SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END), 0) as total_revenue
-                FROM students s
-                LEFT JOIN installments i ON s.id = i.student_id
-                WHERE s.course IS NOT NULL AND s.course != ''
-                GROUP BY s.course
+                FROM customers c
+                LEFT JOIN installments i ON c.id = i.customer_id
+                WHERE c.course IS NOT NULL AND c.course != ''
+                " . ($poloId ? 'AND c.polo_id = :polo_id' : '') . "
+                GROUP BY c.course
                 ORDER BY total_revenue DESC
                 LIMIT 10
             ");
-            $topCourses->execute();
+            $topCourses->execute($poloParams);
             $coursesData = $topCourses->fetchAll();
             
             // Mensalidades vencendo nos próximos 7 dias
             $upcomingDue = $this->db->prepare("
                 SELECT 
-                    i.id, i.amount, i.due_date, i.discount,
-                    s.name as student_name, s.email as student_email,
-                    s.course as student_course,
+                    i.id, i.amount, i.due_date, i.discount, i.has_discount,
+                    c.name as customer_name, c.email as customer_email,
+                    c.course as customer_course,
                     (i.amount - COALESCE(i.discount, 0)) as final_amount,
                     DATEDIFF(i.due_date, CURDATE()) as days_until_due
                 FROM installments i
-                LEFT JOIN students s ON i.student_id = s.id
+                LEFT JOIN customers c ON i.customer_id = c.id
                 WHERE i.status = 'pending' 
                 AND i.due_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+                " . ($poloId ? 'AND i.polo_id = :polo_id' : '') . "
                 ORDER BY i.due_date ASC
                 LIMIT 20
             ");
-            $upcomingDue->execute();
+            $upcomingDue->execute($poloParams);
             $upcomingInstallments = $upcomingDue->fetchAll();
             
             // Mensalidades em atraso
             $overdueInstallments = $this->db->prepare("
                 SELECT 
-                    i.id, i.amount, i.due_date, i.discount,
-                    s.name as student_name, s.email as student_email,
-                    s.course as student_course,
+                    i.id, i.amount, i.due_date, i.discount, i.has_discount,
+                    c.name as customer_name, c.email as customer_email,
+                    c.course as customer_course,
                     (i.amount - COALESCE(i.discount, 0)) as final_amount,
                     DATEDIFF(CURDATE(), i.due_date) as days_overdue
                 FROM installments i
-                LEFT JOIN students s ON i.student_id = s.id
+                LEFT JOIN customers c ON i.customer_id = c.id
                 WHERE i.status = 'pending' AND i.due_date < CURDATE()
+                " . ($poloId ? 'AND i.polo_id = :polo_id' : '') . "
                 ORDER BY i.due_date ASC
                 LIMIT 20
             ");
-            $overdueInstallments->execute();
+            $overdueInstallments->execute($poloParams);
             $overdueData = $overdueInstallments->fetchAll();
             
             // Métodos de pagamento mais utilizados
@@ -1537,10 +2251,11 @@ class MensalidadeAPI {
                     SUM(amount - COALESCE(discount, 0)) as total_amount
                 FROM installments 
                 WHERE status = 'paid'
+                " . ($poloId ? 'AND polo_id = :polo_id' : '') . "
                 GROUP BY payment_method
                 ORDER BY count DESC
             ");
-            $paymentMethods->execute();
+            $paymentMethods->execute($poloParams);
             $paymentMethodsData = $paymentMethods->fetchAll();
             
             // Formatar dados monetários
@@ -1548,7 +2263,7 @@ class MensalidadeAPI {
                 return number_format(floatval($value), 2, '.', '');
             };
             
-            foreach (['total_received', 'total_pending', 'total_overdue'] as $field) {
+            foreach (['total_received', 'total_pending', 'total_overdue', 'total_discount_applied'] as $field) {
                 $stats[$field] = $formatMoney($stats[$field]);
             }
             
@@ -1591,10 +2306,16 @@ class MensalidadeAPI {
                 'upcoming_due' => $upcomingInstallments,
                 'overdue_installments' => $overdueData,
                 'payment_methods' => $paymentMethodsData,
-                'generated_at' => date('d/m/Y H:i:s')
+                'generated_at' => date('d/m/Y H:i:s'),
+                'context' => [
+                    'polo_id' => $poloId,
+                    'user_type' => $_SESSION['usuario_tipo'] ?? 'unknown',
+                    'month' => $month,
+                    'year' => $year
+                ]
             ];
             
-            Logger::info("Dashboard acessado", ['month' => $month, 'year' => $year]);
+            Logger::info("Dashboard acessado", ['month' => $month, 'year' => $year, 'polo_id' => $poloId]);
             ApiResponse::success($dashboardData, "Dados do dashboard carregados com sucesso");
             
         } catch (Exception $e) {
@@ -1604,19 +2325,20 @@ class MensalidadeAPI {
     }
     
     /**
-     * Gerar relatórios personalizados
+     * Gerar relatórios personalizados incluindo desconto
      */
     private function getReports($data) {
         try {
             $reportType = $data['type'] ?? 'general';
             $startDate = $data['start_date'] ?? date('Y-m-01');
             $endDate = $data['end_date'] ?? date('Y-m-t');
+            $poloId = $data['polo_id'] ?? ($_SESSION['polo_id'] ?? null);
             $studentId = $data['student_id'] ?? null;
             $course = $data['course'] ?? null;
             
             switch ($reportType) {
                 case 'financial':
-                    $report = $this->generateFinancialReport($startDate, $endDate, $course);
+                    $report = $this->generateFinancialReport($startDate, $endDate, $course, $poloId);
                     break;
                     
                 case 'student':
@@ -1624,21 +2346,26 @@ class MensalidadeAPI {
                     break;
                     
                 case 'overdue':
-                    $report = $this->generateOverdueReport($startDate, $endDate);
+                    $report = $this->generateOverdueReport($startDate, $endDate, $poloId);
                     break;
                     
                 case 'course':
-                    $report = $this->generateCourseReport($startDate, $endDate);
+                    $report = $this->generateCourseReport($startDate, $endDate, $poloId);
+                    break;
+                    
+                case 'discount':
+                    $report = $this->generateDiscountReport($startDate, $endDate, $poloId);
                     break;
                     
                 default:
-                    $report = $this->generateGeneralReport($startDate, $endDate);
+                    $report = $this->generateGeneralReport($startDate, $endDate, $poloId);
                     break;
             }
             
             Logger::info("Relatório gerado", [
                 'type' => $reportType,
-                'period' => "$startDate a $endDate"
+                'period' => "$startDate a $endDate",
+                'polo_id' => $poloId
             ]);
             
             ApiResponse::success($report, "Relatório gerado com sucesso");
@@ -1650,414 +2377,618 @@ class MensalidadeAPI {
     }
     
     /**
-     * Relatório financeiro detalhado
+     * Relatório financeiro com informações de desconto
      */
-    private function generateFinancialReport($startDate, $endDate, $course = null) {
+    private function generateFinancialReport($startDate, $endDate, $course = null, $poloId = null) {
         $whereClause = "WHERE i.due_date BETWEEN :start_date AND :end_date";
         $params = ['start_date' => $startDate, 'end_date' => $endDate];
         
         if ($course) {
-            $whereClause .= " AND s.course LIKE :course";
+            $whereClause .= " AND c.course LIKE :course";
             $params['course'] = "%$course%";
         }
         
-        $sql = "
-            SELECT 
-                DATE_FORMAT(i.due_date, '%Y-%m') as month,
-                COUNT(i.id) as total_installments,
-                COUNT(CASE WHEN i.status = 'paid' THEN 1 END) as paid_count,
-                COUNT(CASE WHEN i.status = 'pending' THEN 1 END) as pending_count,
-                SUM(i.amount) as gross_amount,
-                SUM(COALESCE(i.discount, 0)) as total_discounts,
-                SUM(i.amount - COALESCE(i.discount, 0)) as net_amount,
-                SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END) as received_amount,
-                SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END) as pending_amount
-            FROM installments i
-            LEFT JOIN students s ON i.student_id = s.id
-            $whereClause
-            GROUP BY DATE_FORMAT(i.due_date, '%Y-%m')
-            ORDER BY month DESC
-        ";
+        if ($poloId) {
+            $whereClause .= " AND i.polo_id = :polo_id";
+            $params['polo_id'] = $poloId;
+        }
         
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
-        
-        return [
-            'type' => 'financial',
-            'period' => ['start' => $startDate, 'end' => $endDate],
-            'course_filter' => $course,
-            'data' => $stmt->fetchAll()
-        ];
+        $sql = "SELECT 
+            DATE_FORMAT(i.due_date, '%Y-%m') as month,
+            COUNT(i.id) as total_installments,
+            COUNT(CASE WHEN i.status = 'paid' THEN 1 END) as paid_count,
+            COUNT(CASE WHEN i.status = 'pending' THEN 1 END) as pending_count,
+            SUM(i.amount) as gross_amount,
+            SUM(COALESCE(i.discount, 0)) as total_discounts,
+            SUM(i.amount - COALESCE(i.discount, 0)) as net_amount,
+            SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END) as received_amount,
+            SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END) as pending_amount,
+            COUNT(CASE WHEN i.has_discount = 1 THEN 1 END) as installments_with_discount
+        FROM installments i
+        LEFT JOIN customers c ON i.customer_id = c.id
+        $whereClause
+        GROUP BY DATE_FORMAT(i.due_date, '%Y-%m')
+        ORDER BY month DESC
+    ";
+    
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    
+    return [
+        'type' => 'financial',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'course_filter' => $course,
+        'polo_id' => $poloId,
+        'data' => $stmt->fetchAll()
+    ];
+}
+
+/**
+ * Relatório de estudante específico
+ */
+private function generateStudentReport($studentId, $startDate, $endDate) {
+    if (!$studentId) {
+        throw new Exception("ID do estudante é obrigatório para relatório individual");
     }
     
-    /**
-     * Relatório de estudante específico
-     */
-    private function generateStudentReport($studentId, $startDate, $endDate) {
-        if (!$studentId) {
-            throw new Exception("ID do estudante é obrigatório para relatório individual");
+    // Dados do estudante
+    $studentStmt = $this->db->prepare("SELECT * FROM students WHERE id = :id");
+    $studentStmt->execute(['id' => $studentId]);
+    $student = $studentStmt->fetch();
+    
+    if (!$student) {
+        throw new Exception("Estudante não encontrado");
+    }
+    
+    // Mensalidades do período
+    $installmentsStmt = $this->db->prepare("
+        SELECT *,
+               (amount - COALESCE(discount, 0)) as final_amount,
+               CASE 
+                   WHEN status = 'pending' AND due_date < CURDATE() THEN DATEDIFF(CURDATE(), due_date)
+                   ELSE 0
+               END as days_overdue
+        FROM installments 
+        WHERE student_id = :student_id 
+        AND due_date BETWEEN :start_date AND :end_date
+        ORDER BY due_date ASC
+    ");
+    
+    $installmentsStmt->execute([
+        'student_id' => $studentId,
+        'start_date' => $startDate,
+        'end_date' => $endDate
+    ]);
+    
+    return [
+        'type' => 'student',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'student' => $student,
+        'installments' => $installmentsStmt->fetchAll()
+    ];
+}
+
+/**
+ * Relatório de mensalidades em atraso
+ */
+private function generateOverdueReport($startDate, $endDate, $poloId = null) {
+    $whereClause = "WHERE i.status = 'pending' AND i.due_date < CURDATE() AND i.due_date BETWEEN :start_date AND :end_date";
+    $params = ['start_date' => $startDate, 'end_date' => $endDate];
+    
+    if ($poloId) {
+        $whereClause .= " AND i.polo_id = :polo_id";
+        $params['polo_id'] = $poloId;
+    }
+    
+    $sql = "
+        SELECT 
+            i.*,
+            c.name as customer_name,
+            c.email as customer_email,
+            c.phone as customer_phone,
+            c.course as customer_course,
+            (i.amount - COALESCE(i.discount, 0)) as final_amount,
+            DATEDIFF(CURDATE(), i.due_date) as days_overdue
+        FROM installments i
+        LEFT JOIN customers c ON i.customer_id = c.id
+        $whereClause
+        ORDER BY i.due_date ASC, days_overdue DESC
+    ";
+    
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    
+    return [
+        'type' => 'overdue',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'polo_id' => $poloId,
+        'overdue_installments' => $stmt->fetchAll()
+    ];
+}
+
+/**
+ * Relatório por curso
+ */
+private function generateCourseReport($startDate, $endDate, $poloId = null) {
+    $whereClause = "WHERE i.due_date BETWEEN :start_date AND :end_date";
+    $params = ['start_date' => $startDate, 'end_date' => $endDate];
+    
+    if ($poloId) {
+        $whereClause .= " AND c.polo_id = :polo_id";
+        $params['polo_id'] = $poloId;
+    }
+    
+    $sql = "
+        SELECT 
+            c.course,
+            COUNT(DISTINCT c.id) as total_students,
+            COUNT(i.id) as total_installments,
+            COUNT(CASE WHEN i.status = 'paid' THEN 1 END) as paid_installments,
+            COUNT(CASE WHEN i.status = 'pending' THEN 1 END) as pending_installments,
+            SUM(i.amount) as gross_revenue,
+            SUM(COALESCE(i.discount, 0)) as total_discounts,
+            SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END) as received_revenue,
+            SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END) as pending_revenue,
+            COUNT(CASE WHEN i.has_discount = 1 THEN 1 END) as installments_with_discount
+        FROM customers c
+        LEFT JOIN installments i ON c.id = i.customer_id AND i.due_date BETWEEN :start_date AND :end_date
+        WHERE c.course IS NOT NULL AND c.course != '' 
+        " . ($poloId ? "AND c.polo_id = :polo_id" : "") . "
+        GROUP BY c.course
+        ORDER BY received_revenue DESC
+    ";
+    
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    
+    return [
+        'type' => 'course',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'polo_id' => $poloId,
+        'courses' => $stmt->fetchAll()
+    ];
+}
+
+/**
+ * Relatório específico de descontos
+ */
+private function generateDiscountReport($startDate, $endDate, $poloId = null) {
+    $whereClause = "WHERE i.created_at BETWEEN :start_date AND :end_date AND i.has_discount = 1";
+    $params = ['start_date' => $startDate, 'end_date' => $endDate];
+    
+    if ($poloId) {
+        $whereClause .= " AND i.polo_id = :polo_id";
+        $params['polo_id'] = $poloId;
+    }
+    
+    $sql = "
+        SELECT 
+            i.*,
+            c.name as customer_name,
+            c.email as customer_email,
+            c.course as customer_course,
+            (i.installment_value * i.installment_count) as total_original_value,
+            CASE 
+                WHEN i.discount_type = 'FIXED' THEN 
+                    (i.discount_value * i.installment_count)
+                ELSE 
+                    ((i.installment_value * i.discount_value / 100) * i.installment_count)
+            END as total_discount_amount,
+            ROUND(
+                CASE 
+                    WHEN i.discount_type = 'FIXED' THEN 
+                        (i.discount_value / i.installment_value) * 100
+                    ELSE 
+                        i.discount_value
+                END, 2
+            ) as discount_percentage
+        FROM installments i
+        LEFT JOIN customers c ON i.customer_id = c.id
+        $whereClause
+        ORDER BY i.created_at DESC
+    ";
+    
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    $discountData = $stmt->fetchAll();
+    
+    // Calcular totais
+    $totalOriginalValue = 0;
+    $totalDiscountAmount = 0;
+    
+    foreach ($discountData as $row) {
+        $totalOriginalValue += $row['total_original_value'];
+        $totalDiscountAmount += $row['total_discount_amount'];
+    }
+    
+    return [
+        'type' => 'discount',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'polo_id' => $poloId,
+        'discount_installments' => $discountData,
+        'summary' => [
+            'total_installments_with_discount' => count($discountData),
+            'total_original_value' => $totalOriginalValue,
+            'total_discount_amount' => $totalDiscountAmount,
+            'average_discount_percentage' => $totalOriginalValue > 0 ? 
+                round(($totalDiscountAmount / $totalOriginalValue) * 100, 2) : 0
+        ]
+    ];
+}
+
+/**
+ * Relatório geral
+ */
+private function generateGeneralReport($startDate, $endDate, $poloId = null) {
+    $financialData = $this->generateFinancialReport($startDate, $endDate, null, $poloId);
+    $overdueData = $this->generateOverdueReport($startDate, $endDate, $poloId);
+    $courseData = $this->generateCourseReport($startDate, $endDate, $poloId);
+    $discountData = $this->generateDiscountReport($startDate, $endDate, $poloId);
+    
+    return [
+        'type' => 'general',
+        'period' => ['start' => $startDate, 'end' => $endDate],
+        'polo_id' => $poloId,
+        'financial_summary' => $financialData['data'],
+        'overdue_summary' => $overdueData['overdue_installments'],
+        'courses_summary' => $courseData['courses'],
+        'discount_summary' => $discountData
+    ];
+}
+
+/**
+ * Exportar dados para CSV/Excel
+ */
+private function exportData($data) {
+    try {
+        $exportType = $data['export_type'] ?? 'students';
+        $format = $data['format'] ?? 'csv';
+        $filters = $data['filters'] ?? [];
+        $poloId = $filters['polo_id'] ?? ($_SESSION['polo_id'] ?? null);
+        
+        switch ($exportType) {
+            case 'students':
+                $exportData = $this->exportStudents($filters, $poloId);
+                $filename = "estudantes_" . date('Y-m-d_H-i-s');
+                break;
+                
+            case 'installments':
+                $exportData = $this->exportInstallments($filters, $poloId);
+                $filename = "mensalidades_" . date('Y-m-d_H-i-s');
+                break;
+                
+            case 'financial':
+                $exportData = $this->exportFinancial($filters, $poloId);
+                $filename = "financeiro_" . date('Y-m-d_H-i-s');
+                break;
+                
+            case 'discount':
+                $exportData = $this->exportDiscounts($filters, $poloId);
+                $filename = "descontos_" . date('Y-m-d_H-i-s');
+                break;
+                
+            default:
+                ApiResponse::badRequest("Tipo de exportação inválido");
         }
         
-        // Dados do estudante
-        $studentStmt = $this->db->prepare("SELECT * FROM students WHERE id = :id");
-        $studentStmt->execute(['id' => $studentId]);
-        $student = $studentStmt->fetch();
-        
-        if (!$student) {
-            throw new Exception("Estudante não encontrado");
+        if ($format === 'csv') {
+            $csvData = $this->generateCSV($exportData);
+            $response = [
+                'filename' => $filename . '.csv',
+                'content' => base64_encode($csvData),
+                'mime_type' => 'text/csv'
+            ];
+        } else {
+            ApiResponse::badRequest("Formato não suportado");
         }
         
-        // Mensalidades do período
-        $installmentsStmt = $this->db->prepare("
-            SELECT *,
-                   (amount - COALESCE(discount, 0)) as final_amount,
-                   CASE 
-                       WHEN status = 'pending' AND due_date < CURDATE() THEN DATEDIFF(CURDATE(), due_date)
-                       ELSE 0
-                   END as days_overdue
-            FROM installments 
-            WHERE student_id = :student_id 
-            AND due_date BETWEEN :start_date AND :end_date
-            ORDER BY due_date ASC
-        ");
-        
-        $installmentsStmt->execute([
-            'student_id' => $studentId,
-            'start_date' => $startDate,
-            'end_date' => $endDate
+        Logger::info("Exportação realizada", [
+            'type' => $exportType,
+            'format' => $format,
+            'records' => count($exportData),
+            'polo_id' => $poloId
         ]);
         
-        return [
-            'type' => 'student',
-            'period' => ['start' => $startDate, 'end' => $endDate],
-            'student' => $student,
-            'installments' => $installmentsStmt->fetchAll()
-        ];
+        ApiResponse::success($response, "Exportação realizada com sucesso");
+        
+    } catch (Exception $e) {
+        Logger::error("Erro na exportação: " . $e->getMessage());
+        ApiResponse::error("Erro ao exportar dados");
+    }
+}
+
+/**
+ * Exportar dados de estudantes
+ */
+private function exportStudents($filters, $poloId = null) {
+    $whereConditions = [];
+    $params = [];
+    
+    if (!empty($filters['status'])) {
+        $whereConditions[] = "status = :status";
+        $params['status'] = $filters['status'];
     }
     
-    /**
-     * Relatório de mensalidades em atraso
-     */
-    private function generateOverdueReport($startDate, $endDate) {
-        $sql = "
-            SELECT 
-                i.*,
-                s.name as student_name,
-                s.email as student_email,
-                s.phone as student_phone,
-                s.course as student_course,
-                (i.amount - COALESCE(i.discount, 0)) as final_amount,
-                DATEDIFF(CURDATE(), i.due_date) as days_overdue
-            FROM installments i
-            LEFT JOIN students s ON i.student_id = s.id
-            WHERE i.status = 'pending' 
-            AND i.due_date < CURDATE()
-            AND i.due_date BETWEEN :start_date AND :end_date
-            ORDER BY i.due_date ASC, days_overdue DESC
-        ";
-        
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute(['start_date' => $startDate, 'end_date' => $endDate]);
-        
-        return [
-            'type' => 'overdue',
-            'period' => ['start' => $startDate, 'end' => $endDate],
-            'overdue_installments' => $stmt->fetchAll()
-        ];
+    if (!empty($filters['course'])) {
+        $whereConditions[] = "course LIKE :course";
+        $params['course'] = "%{$filters['course']}%";
     }
     
-    /**
-     * Relatório por curso
-     */
-    private function generateCourseReport($startDate, $endDate) {
-        $sql = "
-            SELECT 
-                s.course,
-                COUNT(DISTINCT s.id) as total_students,
-                COUNT(i.id) as total_installments,
-                COUNT(CASE WHEN i.status = 'paid' THEN 1 END) as paid_installments,
-                COUNT(CASE WHEN i.status = 'pending' THEN 1 END) as pending_installments,
-                SUM(i.amount) as gross_revenue,
-                SUM(COALESCE(i.discount, 0)) as total_discounts,
-                SUM(CASE WHEN i.status = 'paid' THEN (i.amount - COALESCE(i.discount, 0)) END) as received_revenue,
-                SUM(CASE WHEN i.status = 'pending' THEN (i.amount - COALESCE(i.discount, 0)) END) as pending_revenue
-            FROM students s
-            LEFT JOIN installments i ON s.id = i.student_id 
-                AND i.due_date BETWEEN :start_date AND :end_date
-            WHERE s.course IS NOT NULL AND s.course != ''
-            GROUP BY s.course
-            ORDER BY received_revenue DESC
-        ";
-        
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute(['start_date' => $startDate, 'end_date' => $endDate]);
-        
-        return [
-            'type' => 'course',
-            'period' => ['start' => $startDate, 'end' => $endDate],
-            'courses' => $stmt->fetchAll()
-        ];
+    if ($poloId) {
+        $whereConditions[] = "polo_id = :polo_id";
+        $params['polo_id'] = $poloId;
     }
     
-    /**
-     * Relatório geral
-     */
-    private function generateGeneralReport($startDate, $endDate) {
-        $financialData = $this->generateFinancialReport($startDate, $endDate);
-        $overdueData = $this->generateOverdueReport($startDate, $endDate);
-        $courseData = $this->generateCourseReport($startDate, $endDate);
-        
-        return [
-            'type' => 'general',
-            'period' => ['start' => $startDate, 'end' => $endDate],
-            'financial_summary' => $financialData['data'],
-            'overdue_summary' => $overdueData['overdue_installments'],
-            'courses_summary' => $courseData['courses']
-        ];
+    $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
+    
+    $sql = "SELECT name, email, cpf, phone, course, status, created_at FROM students $whereClause ORDER BY name";
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    
+    return $stmt->fetchAll();
+}
+
+/**
+ * Exportar dados de mensalidades com desconto
+ */
+private function exportInstallments($filters, $poloId = null) {
+    $whereConditions = [];
+    $params = [];
+    
+    if (!empty($filters['status'])) {
+        $whereConditions[] = "i.status = :status";
+        $params['status'] = $filters['status'];
     }
     
-    /**
-     * Exportar dados para CSV/Excel
-     */
-    private function exportData($data) {
-        try {
-            $exportType = $data['export_type'] ?? 'students';
-            $format = $data['format'] ?? 'csv';
-            $filters = $data['filters'] ?? [];
-            
-            switch ($exportType) {
-                case 'students':
-                    $exportData = $this->exportStudents($filters);
-                    $filename = "estudantes_" . date('Y-m-d_H-i-s');
-                    break;
-                    
-                case 'installments':
-                    $exportData = $this->exportInstallments($filters);
-                    $filename = "mensalidades_" . date('Y-m-d_H-i-s');
-                    break;
-                    
-                case 'financial':
-                    $exportData = $this->exportFinancial($filters);
-                    $filename = "financeiro_" . date('Y-m-d_H-i-s');
-                    break;
-                    
-                default:
-                    ApiResponse::badRequest("Tipo de exportação inválido");
-            }
-            
-            if ($format === 'csv') {
-                $csvData = $this->generateCSV($exportData);
-                $response = [
-                    'filename' => $filename . '.csv',
-                    'content' => base64_encode($csvData),
-                    'mime_type' => 'text/csv'
-                ];
-            } else {
-                ApiResponse::badRequest("Formato não suportado");
-            }
-            
-            Logger::info("Exportação realizada", [
-                'type' => $exportType,
-                'format' => $format,
-                'records' => count($exportData)
-            ]);
-            
-            ApiResponse::success($response, "Exportação realizada com sucesso");
-            
-        } catch (Exception $e) {
-            Logger::error("Erro na exportação: " . $e->getMessage());
-            ApiResponse::error("Erro ao exportar dados");
-        }
+    if (!empty($filters['start_date']) && !empty($filters['end_date'])) {
+        $whereConditions[] = "i.due_date BETWEEN :start_date AND :end_date";
+        $params['start_date'] = $filters['start_date'];
+        $params['end_date'] = $filters['end_date'];
     }
     
-    /**
-     * Exportar dados de estudantes
-     */
-    private function exportStudents($filters) {
-        $whereConditions = [];
-        $params = [];
-        
-        if (!empty($filters['status'])) {
-            $whereConditions[] = "status = :status";
-            $params['status'] = $filters['status'];
-        }
-        
-        if (!empty($filters['course'])) {
-            $whereConditions[] = "course LIKE :course";
-            $params['course'] = "%{$filters['course']}%";
-        }
-        
-        $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
-        
-        $sql = "SELECT name, email, cpf, phone, course, status, created_at FROM students $whereClause ORDER BY name";
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
-        
-        return $stmt->fetchAll();
+    if ($poloId) {
+        $whereConditions[] = "i.polo_id = :polo_id";
+        $params['polo_id'] = $poloId;
     }
     
-    /**
-     * Exportar dados de mensalidades
-     */
-    private function exportInstallments($filters) {
-        $whereConditions = [];
-        $params = [];
-        
-        if (!empty($filters['status'])) {
-            $whereConditions[] = "i.status = :status";
-            $params['status'] = $filters['status'];
-        }
-        
-        if (!empty($filters['start_date']) && !empty($filters['end_date'])) {
-            $whereConditions[] = "i.due_date BETWEEN :start_date AND :end_date";
-            $params['start_date'] = $filters['start_date'];
-            $params['end_date'] = $filters['end_date'];
-        }
-        
-        $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
-        
-        $sql = "
-            SELECT 
-                s.name as estudante,
-                s.course as curso,
-                i.amount as valor,
-                i.discount as desconto,
-                (i.amount - COALESCE(i.discount, 0)) as valor_final,
-                i.due_date as vencimento,
-                i.paid_date as data_pagamento,
-                i.status,
-                i.payment_method as forma_pagamento
-            FROM installments i
-            LEFT JOIN students s ON i.student_id = s.id
-            $whereClause
-            ORDER BY i.due_date DESC
-        ";
-        
-        $stmt = $this->db->prepare($sql);
-        $stmt->execute($params);
-        
-        return $stmt->fetchAll();
+    $whereClause = !empty($whereConditions) ? 'WHERE ' . implode(' AND ', $whereConditions) : '';
+    
+    $sql = "
+        SELECT 
+            c.name as estudante,
+            c.course as curso,
+            i.amount as valor,
+            i.discount as desconto,
+            (i.amount - COALESCE(i.discount, 0)) as valor_final,
+            i.due_date as vencimento,
+            i.paid_date as data_pagamento,
+            i.status,
+            i.payment_method as forma_pagamento,
+            CASE WHEN i.has_discount THEN 'Sim' ELSE 'Não' END as tem_desconto,
+            i.discount_type as tipo_desconto,
+            i.discount_value as valor_desconto
+        FROM installments i
+        LEFT JOIN customers c ON i.customer_id = c.id
+        $whereClause
+        ORDER BY i.due_date DESC
+    ";
+    
+    $stmt = $this->db->prepare($sql);
+    $stmt->execute($params);
+    
+    return $stmt->fetchAll();
+}
+
+/**
+ * Exportar relatório financeiro
+ */
+private function exportFinancial($filters, $poloId = null) {
+    $startDate = $filters['start_date'] ?? date('Y-m-01');
+    $endDate = $filters['end_date'] ?? date('Y-m-t');
+    
+    return $this->generateFinancialReport($startDate, $endDate, null, $poloId)['data'];
+}
+
+/**
+ * Exportar dados de descontos
+ */
+private function exportDiscounts($filters, $poloId = null) {
+    $startDate = $filters['start_date'] ?? date('Y-m-01');
+    $endDate = $filters['end_date'] ?? date('Y-m-t');
+    
+    $discountReport = $this->generateDiscountReport($startDate, $endDate, $poloId);
+    return $discountReport['discount_installments'];
+}
+
+/**
+ * Gerar conteúdo CSV
+ */
+private function generateCSV($data) {
+    if (empty($data)) {
+        return "Nenhum dado encontrado\n";
     }
     
-    /**
-     * Exportar relatório financeiro
-     */
-    private function exportFinancial($filters) {
-        $startDate = $filters['start_date'] ?? date('Y-m-01');
-        $endDate = $filters['end_date'] ?? date('Y-m-t');
-        
-        return $this->generateFinancialReport($startDate, $endDate)['data'];
+    $output = fopen('php://temp', 'r+');
+    
+    // Cabeçalho
+    fputcsv($output, array_keys($data[0]), ';');
+    
+    // Dados
+    foreach ($data as $row) {
+        fputcsv($output, $row, ';');
     }
     
-    /**
-     * Gerar conteúdo CSV
-     */
-    private function generateCSV($data) {
-        if (empty($data)) {
-            return "Nenhum dado encontrado\n";
-        }
-        
-        $output = fopen('php://temp', 'r+');
-        
-        // Cabeçalho
-        fputcsv($output, array_keys($data[0]), ';');
-        
-        // Dados
-        foreach ($data as $row) {
-            fputcsv($output, $row, ';');
-        }
-        
-        rewind($output);
-        $csv = stream_get_contents($output);
-        fclose($output);
-        
-        return $csv;
-    }
+    rewind($output);
+    $csv = stream_get_contents($output);
+    fclose($output);
+    
+    return $csv;
+}
 }
 
 // Inicialização e execução da API
 try {
-    $api = new MensalidadeAPI();
-    $api->handleRequest();
+$api = new MensalidadeAPI();
+$api->handleRequest();
 } catch (Exception $e) {
-    Logger::error("Erro fatal na inicialização: " . $e->getMessage());
-    ApiResponse::error("Erro interno do servidor");
+Logger::error("Erro fatal na inicialização: " . $e->getMessage());
+ApiResponse::error("Erro interno do servidor");
 }
 
 /**
- * TABELAS SQL NECESSÁRIAS PARA O SISTEMA
- * Execute estes comandos no seu banco de dados MySQL
- */
+* TABELAS SQL NECESSÁRIAS PARA O SISTEMA COMPLETO COM DESCONTO
+* Execute estes comandos no seu banco de dados MySQL
+*/
 
 /*
 -- Tabela de estudantes
 CREATE TABLE IF NOT EXISTS students (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    cpf VARCHAR(11) UNIQUE NOT NULL,
-    phone VARCHAR(20),
-    course VARCHAR(255),
-    status ENUM('active', 'inactive') DEFAULT 'active',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_email (email),
-    INDEX idx_cpf (cpf),
-    INDEX idx_status (status)
+id INT AUTO_INCREMENT PRIMARY KEY,
+name VARCHAR(255) NOT NULL,
+email VARCHAR(255) UNIQUE NOT NULL,
+cpf VARCHAR(11) UNIQUE NOT NULL,
+phone VARCHAR(20),
+course VARCHAR(255),
+status ENUM('active', 'inactive') DEFAULT 'active',
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+INDEX idx_email (email),
+INDEX idx_cpf (cpf),
+INDEX idx_status (status)
 );
 
--- Tabela de mensalidades
+-- Tabela de clientes (para integração ASAAS)
+CREATE TABLE IF NOT EXISTS customers (
+id VARCHAR(100) PRIMARY KEY,
+polo_id INT NULL,
+name VARCHAR(255) NOT NULL,
+email VARCHAR(255) NOT NULL,
+cpf_cnpj VARCHAR(20),
+mobile_phone VARCHAR(20),
+address TEXT,
+course VARCHAR(255),
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+INDEX idx_polo_id (polo_id),
+INDEX idx_email (email),
+INDEX idx_cpf_cnpj (cpf_cnpj),
+INDEX idx_course (course)
+);
+
+-- Tabela de mensalidades tradicionais
 CREATE TABLE IF NOT EXISTS installments (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    student_id INT NOT NULL,
-    amount DECIMAL(10,2) NOT NULL,
-    discount DECIMAL(10,2) DEFAULT 0,
-    discount_reason TEXT,
-    due_date DATE NOT NULL,
-    paid_date TIMESTAMP NULL,
-    status ENUM('pending', 'paid', 'overdue') DEFAULT 'pending',
-    payment_method VARCHAR(50),
-    notes TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-    INDEX idx_student_id (student_id),
-    INDEX idx_status (status),
-    INDEX idx_due_date (due_date)
+id INT AUTO_INCREMENT PRIMARY KEY,
+student_id INT,
+amount DECIMAL(10,2) NOT NULL,
+discount DECIMAL(10,2) DEFAULT 0,
+due_date DATE NOT NULL,
+paid_date TIMESTAMP NULL,
+status ENUM('pending', 'paid', 'overdue') DEFAULT 'pending',
+payment_method VARCHAR(50),
+notes TEXT,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+INDEX idx_student_id (student_id),
+INDEX idx_status (status),
+INDEX idx_due_date (due_date)
 );
 
--- Tabela de logs de desconto
-CREATE TABLE IF NOT EXISTS discount_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    installment_id INT NOT NULL,
-    original_amount DECIMAL(10,2) NOT NULL,
-    discount_amount DECIMAL(10,2) NOT NULL,
-    final_amount DECIMAL(10,2) NOT NULL,
-    reason TEXT,
-    applied_by VARCHAR(255),
-    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (installment_id) REFERENCES installments(id) ON DELETE CASCADE,
-    INDEX idx_installment_id (installment_id)
+-- Tabela de parcelamentos ASAAS (NOVA - COM DESCONTO)
+CREATE TABLE IF NOT EXISTS installments (
+id INT AUTO_INCREMENT PRIMARY KEY,
+installment_id VARCHAR(100) NOT NULL UNIQUE,
+polo_id INT NULL,
+customer_id VARCHAR(100) NOT NULL,
+installment_count INT NOT NULL,
+installment_value DECIMAL(10,2) NOT NULL,
+total_value DECIMAL(10,2) NOT NULL,
+first_due_date DATE NOT NULL,
+billing_type VARCHAR(20) NOT NULL,
+description TEXT,
+has_splits BOOLEAN DEFAULT 0,
+splits_count INT DEFAULT 0,
+created_by INT,
+first_payment_id VARCHAR(100),
+has_discount BOOLEAN DEFAULT 0,
+discount_type ENUM('FIXED', 'PERCENTAGE') NULL,
+discount_value DECIMAL(10,2) NULL,
+status ENUM('ACTIVE', 'CANCELLED', 'COMPLETED') DEFAULT 'ACTIVE',
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+INDEX idx_installment_id (installment_id),
+INDEX idx_polo_id (polo_id),
+INDEX idx_customer_id (customer_id),
+INDEX idx_status (status),
+INDEX idx_has_discount (has_discount),
+INDEX idx_created_at (created_at)
+);
+
+-- Tabela de detalhes de desconto
+CREATE TABLE IF NOT EXISTS installment_discounts (
+id INT AUTO_INCREMENT PRIMARY KEY,
+installment_id VARCHAR(100) NOT NULL,
+discount_type ENUM('FIXED', 'PERCENTAGE') NOT NULL,
+discount_value DECIMAL(10,2) NOT NULL,
+discount_deadline ENUM('DUE_DATE', 'BEFORE_DUE_DATE', '3_DAYS_BEFORE', '5_DAYS_BEFORE') NOT NULL,
+is_active BOOLEAN DEFAULT 1,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+INDEX idx_installment_id (installment_id),
+INDEX idx_is_active (is_active)
+);
+
+-- Tabela de parcelas individuais
+CREATE TABLE IF NOT EXISTS installment_payments (
+id INT AUTO_INCREMENT PRIMARY KEY,
+installment_id VARCHAR(100) NOT NULL,
+payment_id VARCHAR(100) NOT NULL,
+installment_number INT NOT NULL,
+due_date DATE NOT NULL,
+value DECIMAL(10,2) NOT NULL,
+status VARCHAR(20) DEFAULT 'PENDING',
+paid_date DATETIME NULL,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+INDEX idx_installment_id (installment_id),
+INDEX idx_payment_id (payment_id),
+INDEX idx_due_date (due_date),
+INDEX idx_status (status)
+);
+
+-- Tabela de splits de pagamento
+CREATE TABLE IF NOT EXISTS payment_splits (
+id INT PRIMARY KEY AUTO_INCREMENT,
+payment_id VARCHAR(100) NOT NULL,
+wallet_id VARCHAR(100) NOT NULL,
+split_type ENUM('PERCENTAGE', 'FIXED') NOT NULL,
+percentage_value DECIMAL(5,2) NULL,
+fixed_value DECIMAL(10,2) NULL,
+created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+INDEX idx_payment_id (payment_id),
+INDEX idx_wallet_id (wallet_id)
 );
 
 -- Tabela de logs de pagamento
 CREATE TABLE IF NOT EXISTS payment_logs (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    installment_id INT NOT NULL,
-    student_id INT NOT NULL,
-    amount DECIMAL(10,2) NOT NULL,
-    discount DECIMAL(10,2) DEFAULT 0,
-    final_amount DECIMAL(10,2) NOT NULL,
-    payment_method VARCHAR(50),
-    paid_date TIMESTAMP NOT NULL,
-    processed_by VARCHAR(255),
-    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (installment_id) REFERENCES installments(id) ON DELETE CASCADE,
-    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-    INDEX idx_installment_id (installment_id),
-    INDEX idx_student_id (student_id),
-    INDEX idx_paid_date (paid_date)
+id INT AUTO_INCREMENT PRIMARY KEY,
+installment_id INT,
+student_id INT,
+amount DECIMAL(10,2) NOT NULL,
+discount DECIMAL(10,2) DEFAULT 0,
+final_amount DECIMAL(10,2) NOT NULL,
+payment_method VARCHAR(50),
+paid_date TIMESTAMP NOT NULL,
+processed_by VARCHAR(255),
+processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+INDEX idx_installment_id (installment_id),
+INDEX idx_student_id (student_id),
+INDEX idx_paid_date (paid_date)
 );
 */
-
-?>
