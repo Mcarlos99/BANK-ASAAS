@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mensalidades Parceladas - IMEP Split ASAAS</title>
+    <title>Mensalidades Parceladas COM DESCONTO - IMEP Split ASAAS</title>
     
     <!-- Bootstrap 5.3 e Icons -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -14,6 +14,7 @@
             --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
             --warning-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --discount-gradient: linear-gradient(135deg, #ff6b6b 0%, #feca57 100%);
         }
         
         body {
@@ -48,6 +49,43 @@
             box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }
         
+        /* ===== ESTILOS PARA DESCONTO ===== */
+        .discount-section {
+            background: linear-gradient(135deg, rgba(255, 107, 107, 0.05) 0%, rgba(254, 202, 87, 0.05) 100%);
+            border: 2px dashed #ff6b6b;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+            position: relative;
+        }
+        
+        .discount-enabled {
+            background: var(--discount-gradient);
+            color: white;
+        }
+        
+        .discount-preview {
+            background: white;
+            border: 2px solid #ff6b6b;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 10px 0;
+            text-align: center;
+        }
+        
+        .discount-toggle-card {
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            padding: 15px;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .discount-toggle-card.active {
+            border-color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.1);
+        }
+        
         .parcela-preview {
             background: #f8f9fa;
             border: 2px dashed #dee2e6;
@@ -62,56 +100,30 @@
             background: rgba(102, 126, 234, 0.02);
         }
         
-        .plano-card {
-            border-left: 4px solid #667eea;
-            transition: all 0.3s ease;
+        .parcela-preview.with-discount {
+            border-color: #ff6b6b;
+            background: rgba(255, 107, 107, 0.05);
         }
         
-        .plano-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-            border-left-color: #764ba2;
+        .valor-original {
+            text-decoration: line-through;
+            color: #6c757d;
+            font-size: 0.9rem;
         }
         
-        .progress {
-            height: 8px;
-            border-radius: 4px;
+        .valor-com-desconto {
+            color: #28a745;
+            font-weight: bold;
+            font-size: 1.1rem;
         }
         
-        .status-badge {
-            font-size: 0.75rem;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-weight: 600;
-        }
-        
-        .section {
-            display: none;
-        }
-        
-        .section.active {
-            display: block;
-            animation: fadeIn 0.5s ease-in;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .split-item {
-            background: #f8f9fa;
-            border: 2px dashed #dee2e6;
-            border-radius: 10px;
-            padding: 15px;
-            margin: 10px 0;
-            position: relative;
-        }
-        
-        .split-remove-btn {
-            position: absolute;
-            top: 10px;
-            right: 10px;
+        .economia-badge {
+            background: #28a745;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: bold;
         }
         
         .calculation-display {
@@ -128,11 +140,34 @@
             color: #1976d2;
         }
         
+        .discount-summary {
+            background: var(--discount-gradient);
+            color: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 15px 0;
+            text-align: center;
+        }
+        
         .navbar {
             background: white;
             box-shadow: 0 2px 10px rgba(0,0,0,0.08);
             border-radius: 0 0 15px 15px;
             margin-bottom: 20px;
+        }
+        
+        .section {
+            display: none;
+        }
+        
+        .section.active {
+            display: block;
+            animation: fadeIn 0.5s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
         }
     </style>
 </head>
@@ -146,14 +181,17 @@
             </a>
             
             <div class="d-flex align-items-center gap-3">
-                <span class="badge bg-primary">Mensalidades Parceladas</span>
+                <span class="badge bg-primary">Mensalidades com Desconto</span>
+                <span class="badge bg-success">
+                    <i class="bi bi-percent me-1"></i>
+                    Desconto Automático
+                </span>
                 <a href="index.php" class="btn btn-outline-secondary">
                     <i class="bi bi-arrow-left"></i> Voltar
                 </a>
             </div>
         </div>
     </nav>
-
     <div class="container">
         <!-- Navegação por Seções -->
         <div class="row mb-4">
@@ -175,14 +213,17 @@
                 </div>
             </div>
         </div>
-
-        <!-- Seção: Criar Nova Mensalidade -->
+        <!-- Seção: Criar Nova Mensalidade COM DESCONTO -->
         <div id="criar-section" class="section active">
             <div class="row">
                 <div class="col-lg-8">
                     <div class="card">
-                        <div class="card-header">
-                            <h5><i class="bi bi-calendar-plus me-2"></i>Criar Plano de Mensalidades</h5>
+                        <div class="card-header bg-primary text-white">
+                            <h5>
+                                <i class="bi bi-calendar-plus me-2"></i>
+                                Criar Plano de Mensalidades COM DESCONTO
+                            </h5>
+                            <small>Configure desconto automático válido até o vencimento de cada parcela</small>
                         </div>
                         <div class="card-body">
                             <form id="mensalidade-form" method="POST">
@@ -266,9 +307,92 @@
                                         Será adicionado automaticamente "- Parcela X/Y" em cada cobrança
                                     </small>
                                 </div>
-                                
-                                <!-- Configuração de Split -->
-                                <h6 class="border-bottom pb-2 mb-3 mt-4">🔄 Split de Pagamentos (Opcional)</h6>
+
+                                                                <!-- ===== NOVA SEÇÃO: CONFIGURAÇÃO DE DESCONTO ===== -->
+                                                                <div class="discount-section">
+                                    <h6 class="text-danger mb-3">
+                                        <i class="bi bi-percent me-2"></i>
+                                        Configuração de Desconto (Opcional)
+                                    </h6>
+                                    
+                                    <!-- Toggle para Ativar Desconto -->
+                                    <div class="discount-toggle-card mb-3" id="discount-toggle" onclick="toggleDiscount()">
+                                        <div class="form-check form-switch">
+                                            <input class="form-check-input" type="checkbox" id="enable-discount">
+                                            <label class="form-check-label fw-bold" for="enable-discount">
+                                                <i class="bi bi-tag me-2"></i>
+                                                Oferecer Desconto para Pagamento até o Vencimento
+                                            </label>
+                                        </div>
+                                        <small class="text-muted">
+                                            O desconto será aplicado automaticamente a TODAS as parcelas se pagas até o dia do vencimento
+                                        </small>
+                                    </div>
+                                    
+                                    <!-- Configurações do Desconto -->
+                                    <div id="discount-config" style="display: none;">
+                                        <div class="row">
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label text-danger fw-bold">
+                                                        <i class="bi bi-cash-coin me-1"></i>
+                                                        Valor do Desconto (R$) *
+                                                    </label>
+                                                    <div class="input-group">
+                                                        <span class="input-group-text bg-danger text-white">R$</span>
+                                                        <input type="number" class="form-control" name="discount_value" 
+                                                               id="discount-value" step="0.01" min="0" 
+                                                               placeholder="50,00">
+                                                    </div>
+                                                    <small class="form-text text-muted">
+                                                        Valor fixo de desconto por parcela
+                                                    </small>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="col-md-6">
+                                                <div class="mb-3">
+                                                    <label class="form-label text-info fw-bold">
+                                                        <i class="bi bi-calendar-check me-1"></i>
+                                                        Prazo do Desconto
+                                                    </label>
+                                                    <div class="form-control bg-light text-muted">
+                                                        <i class="bi bi-clock me-1"></i>
+                                                        Válido até o dia do vencimento
+                                                    </div>
+                                                    <small class="form-text text-info">
+                                                        Desconto aplicado automaticamente se pago no prazo
+                                                    </small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Preview do Desconto -->
+                                        <div id="discount-preview" class="discount-preview" style="display: none;">
+                                            <h6 class="text-success mb-2">
+                                                <i class="bi bi-calculator me-2"></i>
+                                                Simulação de Economia
+                                            </h6>
+                                            <div class="row">
+                                                <div class="col-4">
+                                                    <div class="fw-bold text-danger" id="discount-per-installment">R$ 0,00</div>
+                                                    <small class="text-muted">Por parcela</small>
+                                                </div>
+                                                <div class="col-4">
+                                                    <div class="fw-bold text-success" id="total-discount-potential">R$ 0,00</div>
+                                                    <small class="text-muted">Economia total</small>
+                                                </div>
+                                                <div class="col-4">
+                                                    <div class="fw-bold text-info" id="discount-percentage">0%</div>
+                                                    <small class="text-muted">% de desconto</small>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                                                <!-- Configuração de Split -->
+                                                                <h6 class="border-bottom pb-2 mb-3 mt-4">🔄 Split de Pagamentos (Opcional)</h6>
                                 
                                 <div id="splits-container">
                                     <div class="split-item">
@@ -301,7 +425,7 @@
                                     </button>
                                     <small class="text-muted">O split será aplicado em todas as mensalidades</small>
                                 </div>
-                                
+
                                 <!-- Botão de Envio -->
                                 <hr>
                                 
@@ -313,16 +437,15 @@
                                         </label>
                                     </div>
                                     <button type="submit" class="btn btn-gradient" id="submit-mensalidade" disabled>
-                                        <i class="bi bi-calendar-check me-2"></i>Criar Mensalidades
+                                        <i class="bi bi-calendar-check me-2"></i>Criar Mensalidades com Desconto
                                     </button>
                                 </div>
                             </form>
                         </div>
                     </div>
                 </div>
-                
-                <!-- Preview das Parcelas -->
-                <div class="col-lg-4">
+                                <!-- Preview das Parcelas COM DESCONTO -->
+                                <div class="col-lg-4">
                     <div class="card">
                         <div class="card-header">
                             <h6><i class="bi bi-calculator me-2"></i>Preview das Mensalidades</h6>
@@ -335,136 +458,101 @@
                                 </div>
                             </div>
                             
-                            <!-- Cálculo Total -->
+                            <!-- Cálculo Total COM DESCONTO -->
                             <div id="total-calculation" class="calculation-display mt-3" style="display: none;">
                                 <div class="valor-destaque" id="valor-total-display">R$ 0,00</div>
-                                <div class="text-muted">
+                                <div class="text-muted mb-2">
                                     <span id="parcelas-info">0 mensalidades de R$ 0,00</span>
                                 </div>
+                                
+                                <!-- Resumo do Desconto -->
+                                <div id="discount-summary-card" class="discount-summary" style="display: none;">
+                                    <h6 class="mb-2">
+                                        <i class="bi bi-percent me-2"></i>
+                                        Resumo do Desconto
+                                    </h6>
+                                    <div class="row">
+                                        <div class="col-6">
+                                            <div class="fw-bold" id="summary-discount-per-installment">R$ 0,00</div>
+                                            <small>Por parcela</small>
+                                        </div>
+                                        <div class="col-6">
+                                            <div class="fw-bold" id="summary-total-economy">R$ 0,00</div>
+                                            <small>Economia total</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <hr>
                                 <small class="text-muted">
                                     <i class="bi bi-info-circle me-1"></i>
-                                    Valores com splits já aplicados
+                                    Valores com desconto aplicado quando pago no prazo
                                 </small>
                             </div>
                         </div>
                     </div>
                     
-                    <!-- Dicas -->
+                    <!-- Dicas COM DESCONTO -->
                     <div class="card mt-3">
                         <div class="card-header">
-                            <h6><i class="bi bi-lightbulb me-2"></i>Dicas Importantes</h6>
+                            <h6><i class="bi bi-lightbulb me-2"></i>Como Funciona o Desconto</h6>
                         </div>
                         <div class="card-body">
                             <ul class="list-unstyled mb-0">
                                 <li class="mb-2">
                                     <i class="bi bi-check-circle text-success me-2"></i>
-                                    <small>Todas as mensalidades são criadas automaticamente</small>
+                                    <small><strong>Automático:</strong> Aplicado se pago até o vencimento</small>
                                 </li>
                                 <li class="mb-2">
                                     <i class="bi bi-check-circle text-success me-2"></i>
-                                    <small>O split é aplicado em cada parcela</small>
+                                    <small><strong>Todas as parcelas:</strong> Desconto em cada mensalidade</small>
                                 </li>
                                 <li class="mb-2">
                                     <i class="bi bi-check-circle text-success me-2"></i>
-                                    <small>Vencimentos mensais automáticos</small>
+                                    <small><strong>Valor fixo:</strong> Mesmo desconto sempre</small>
+                                </li>
+                                <li class="mb-2">
+                                    <i class="bi bi-exclamation-triangle text-warning me-2"></i>
+                                    <small><strong>Prazo:</strong> Apenas até o dia do vencimento</small>
                                 </li>
                                 <li class="mb-0">
-                                    <i class="bi bi-exclamation-triangle text-warning me-2"></i>
-                                    <small>Máximo de 24 parcelas</small>
+                                    <i class="bi bi-info-circle text-info me-2"></i>
+                                    <small><strong>Máximo:</strong> 50% do valor da parcela</small>
                                 </li>
                             </ul>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Seção: Listar Planos -->
-        <div id="listar-section" class="section">
-            <div class="row">
-                <div class="col-12">
-                    <div class="card">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5><i class="bi bi-list me-2"></i>Planos de Mensalidades</h5>
-                            <div class="d-flex gap-2">
-                                <button class="btn btn-outline-primary btn-sm" onclick="refreshPlanos()">
-                                    <i class="bi bi-arrow-clockwise"></i> Atualizar
-                                </button>
-                                <button class="btn btn-outline-success btn-sm" onclick="exportPlanos()">
-                                    <i class="bi bi-download"></i> Exportar
-                                </button>
+                    
+                    <!-- Calculadora de Economia -->
+                    <div class="card mt-3" id="economy-calculator" style="display: none;">
+                        <div class="card-header bg-success text-white">
+                            <h6 class="mb-0">
+                                <i class="bi bi-piggy-bank me-2"></i>
+                                Calculadora de Economia
+                            </h6>
+                        </div>
+                        <div class="card-body text-center">
+                            <div class="mb-3">
+                                <div class="h5 text-success" id="calc-total-savings">R$ 0,00</div>
+                                <small class="text-muted">Economia total possível</small>
                             </div>
-                        </div>
-                        <div class="card-body">
-                            <div id="planos-container">
-                                <div class="text-center">
-                                    <div class="spinner-border text-primary" role="status">
-                                        <span class="visually-hidden">Carregando...</span>
-                                    </div>
-                                    <p class="mt-2">Carregando planos...</p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Seção: Relatórios -->
-        <div id="relatorio-section" class="section">
-            <div class="row">
-                <div class="col-md-8">
-                    <div class="card">
-                        <div class="card-header">
-                            <h5><i class="bi bi-graph-up me-2"></i>Relatório de Mensalidades</h5>
-                        </div>
-                        <div class="card-body">
+                            
                             <div class="row">
-                                <div class="col-md-6">
-                                    <div class="mb-3">
-                                        <label class="form-label">Data Inicial</label>
-                                        <input type="date" class="form-control" id="relatorio-inicio" 
-                                               value="<?php echo date('Y-m-01'); ?>">
-                                    </div>
+                                <div class="col-6">
+                                    <div class="fw-bold text-primary" id="calc-original-total">R$ 0,00</div>
+                                    <small class="text-muted">Sem desconto</small>
                                 </div>
-                                <div class="col-md-6">
-                                    <div class="mb-3">
-                                        <label class="form-label">Data Final</label>
-                                        <input type="date" class="form-control" id="relatorio-fim" 
-                                               value="<?php echo date('Y-m-d'); ?>">
-                                    </div>
+                                <div class="col-6">
+                                    <div class="fw-bold text-success" id="calc-with-discount">R$ 0,00</div>
+                                    <small class="text-muted">Com desconto</small>
                                 </div>
                             </div>
                             
-                            <div class="d-grid gap-2">
-                                <button class="btn btn-gradient" onclick="gerarRelatorio()">
-                                    <i class="bi bi-file-earmark-text me-2"></i>Gerar Relatório
-                                </button>
+                            <hr>
+                            <div class="progress" style="height: 8px;">
+                                <div class="progress-bar bg-success" id="savings-progress" style="width: 0%"></div>
                             </div>
-                            
-                            <div id="relatorio-results" class="mt-4" style="display: none;">
-                                <!-- Resultados aparecerão aqui -->
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="col-md-4">
-                    <div class="card">
-                        <div class="card-header">
-                            <h6><i class="bi bi-speedometer2 me-2"></i>Estatísticas Rápidas</h6>
-                        </div>
-                        <div class="card-body">
-                            <div id="stats-container">
-                                <!-- Estatísticas serão carregadas aqui -->
-                                <div class="text-center">
-                                    <div class="spinner-border spinner-border-sm text-primary" role="status">
-                                        <span class="visually-hidden">Carregando...</span>
-                                    </div>
-                                    <p class="mt-2">Carregando estatísticas...</p>
-                                </div>
-                            </div>
+                            <small class="text-muted mt-1">Percentual de economia</small>
                         </div>
                     </div>
                 </div>
@@ -472,127 +560,134 @@
         </div>
     </div>
 
-    <!-- Modal de Detalhes do Plano -->
-    <div class="modal fade" id="planoModal" tabindex="-1">
-        <div class="modal-dialog modal-lg">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">
-                        <i class="bi bi-calendar-check me-2"></i>
-                        Detalhes do Plano de Mensalidades
-                    </h5>
-                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="plano-details">
-                        <!-- Detalhes do plano aparecerão aqui -->
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Fechar</button>
-                    <button type="button" class="btn btn-danger" id="cancelar-plano-btn" onclick="cancelarPlano()">
-                        <i class="bi bi-x-circle me-2"></i>Cancelar Plano
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+        <!-- Scripts -->
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     
     <script>
-        // ===== CONFIGURAÇÃO GLOBAL =====
+        // ===== CONFIGURAÇÃO GLOBAL COM DESCONTO =====
         let currentSection = 'criar';
         let splitCounter = 1;
-        let selectedPlanoId = null;
+        let discountEnabled = false;
         
-        // ===== NAVEGAÇÃO ENTRE SEÇÕES =====
-        function showSection(section) {
-            // Esconder todas as seções
-            document.querySelectorAll('.section').forEach(el => {
-                el.classList.remove('active');
-            });
+        // ===== FUNÇÕES DE DESCONTO =====
+        
+        /**
+         * Ativar/Desativar seção de desconto
+         */
+        function toggleDiscount() {
+            const checkbox = document.getElementById('enable-discount');
+            const discountConfig = document.getElementById('discount-config');
+            const toggleCard = document.getElementById('discount-toggle');
             
-            // Mostrar seção selecionada
-            const targetSection = document.getElementById(section + '-section');
-            if (targetSection) {
-                targetSection.classList.add('active');
-                currentSection = section;
-                
-                // Atualizar navegação
-                document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
-                const navLink = document.querySelector(`[data-section="${section}"]`);
-                if (navLink) navLink.classList.add('active');
-                
-                // Carregar dados específicos da seção
-                if (section === 'listar') {
-                    loadPlanos();
-                } else if (section === 'relatorio') {
-                    loadStats();
+            discountEnabled = !discountEnabled;
+            checkbox.checked = discountEnabled;
+            
+            if (discountEnabled) {
+                discountConfig.style.display = 'block';
+                toggleCard.classList.add('active');
+                document.getElementById('discount-value').required = true;
+                showToast('Desconto ativado! Configure o valor.', 'success');
+            } else {
+                discountConfig.style.display = 'none';
+                toggleCard.classList.remove('active');
+                document.getElementById('discount-value').required = false;
+                document.getElementById('discount-value').value = '';
+                hideDiscountPreview();
+                showToast('Desconto desativado.', 'info');
+            }
+            
+            updatePreview();
+        }
+        
+        /**
+         * Atualizar preview do desconto
+         */
+        function updateDiscountPreview() {
+            const discountValue = parseFloat(document.getElementById('discount-value').value) || 0;
+            const installmentValue = parseFloat(document.getElementById('valor-mensalidade').value) || 0;
+            const installmentCount = parseInt(document.getElementById('quantidade-parcelas').value) || 0;
+            
+            const discountPreview = document.getElementById('discount-preview');
+            
+            if (discountEnabled && discountValue > 0 && installmentValue > 0) {
+                // Validar se desconto não é maior que 50% da parcela
+                const maxDiscount = installmentValue * 0.50;
+                if (discountValue > maxDiscount) {
+                    showToast(`Desconto muito alto! Máximo: R$ ${maxDiscount.toFixed(2).replace('.', ',')}`, 'warning');
+                    document.getElementById('discount-value').value = maxDiscount.toFixed(2);
+                    return updateDiscountPreview(); // Recalcular com valor corrigido
                 }
+                
+                const totalDiscountPotential = discountValue * installmentCount;
+                const discountPercentage = (discountValue / installmentValue) * 100;
+                
+                // Atualizar elementos do preview
+                document.getElementById('discount-per-installment').textContent = 
+                    `R$ ${discountValue.toFixed(2).replace('.', ',')}`;
+                document.getElementById('total-discount-potential').textContent = 
+                    `R$ ${totalDiscountPotential.toFixed(2).replace('.', ',')}`;
+                document.getElementById('discount-percentage').textContent = 
+                    `${discountPercentage.toFixed(1)}%`;
+                
+                discountPreview.style.display = 'block';
+                
+                // Atualizar calculadora de economia
+                updateEconomyCalculator();
+            } else {
+                discountPreview.style.display = 'none';
             }
         }
         
-        // ===== GESTÃO DE SPLITS =====
-        function addSplit() {
-            splitCounter++;
-            const splitsContainer = document.getElementById('splits-container');
-            
-            const splitHtml = `
-                <div class="split-item">
-                    <button type="button" class="split-remove-btn btn btn-sm btn-outline-danger" onclick="removeSplit(this)">
-                        <i class="bi bi-x"></i>
-                    </button>
-                    
-                    <div class="mb-3">
-                        <label class="form-label">Destinatário do Split</label>
-                        <select class="form-select" name="splits[${splitCounter}][walletId]">
-                            <option value="">Selecione um destinatário</option>
-                            <!-- Wallet IDs serão carregados -->
-                        </select>
-                    </div>
-                    
-                    <div class="row">
-                        <div class="col-6">
-                            <label class="form-label">Percentual (%)</label>
-                            <input type="number" class="form-control" name="splits[${splitCounter}][percentualValue]" 
-                                   step="0.01" max="100" placeholder="0.00">
-                        </div>
-                        <div class="col-6">
-                            <label class="form-label">Valor Fixo (R$)</label>
-                            <input type="number" class="form-control" name="splits[${splitCounter}][fixedValue]" 
-                                   step="0.01" placeholder="0.00">
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            splitsContainer.insertAdjacentHTML('beforeend', splitHtml);
-            showToast('Split adicionado!', 'info');
+        /**
+         * Esconder preview do desconto
+         */
+        function hideDiscountPreview() {
+            document.getElementById('discount-preview').style.display = 'none';
+            document.getElementById('discount-summary-card').style.display = 'none';
+            document.getElementById('economy-calculator').style.display = 'none';
         }
         
-        function removeSplit(button) {
-            const splitItem = button.closest('.split-item');
-            if (splitItem) {
-                splitItem.style.transition = 'opacity 0.3s ease';
-                splitItem.style.opacity = '0';
-                setTimeout(() => {
-                    splitItem.remove();
-                    updatePreview();
-                    showToast('Split removido', 'info');
-                }, 300);
+        /**
+         * Atualizar calculadora de economia
+         */
+        function updateEconomyCalculator() {
+            const discountValue = parseFloat(document.getElementById('discount-value').value) || 0;
+            const installmentValue = parseFloat(document.getElementById('valor-mensalidade').value) || 0;
+            const installmentCount = parseInt(document.getElementById('quantidade-parcelas').value) || 0;
+            
+            if (discountEnabled && discountValue > 0 && installmentValue > 0 && installmentCount > 0) {
+                const originalTotal = installmentValue * installmentCount;
+                const totalSavings = discountValue * installmentCount;
+                const withDiscountTotal = originalTotal - totalSavings;
+                const savingsPercentage = (totalSavings / originalTotal) * 100;
+                
+                // Atualizar elementos da calculadora
+                document.getElementById('calc-total-savings').textContent = 
+                    `R$ ${totalSavings.toFixed(2).replace('.', ',')}`;
+                document.getElementById('calc-original-total').textContent = 
+                    `R$ ${originalTotal.toFixed(2).replace('.', ',')}`;
+                document.getElementById('calc-with-discount').textContent = 
+                    `R$ ${withDiscountTotal.toFixed(2).replace('.', ',')}`;
+                document.getElementById('savings-progress').style.width = `${savingsPercentage}%`;
+                
+                document.getElementById('economy-calculator').style.display = 'block';
+            } else {
+                document.getElementById('economy-calculator').style.display = 'none';
             }
         }
         
-        // ===== PREVIEW DAS MENSALIDADES =====
+        /**
+         * Preview das mensalidades COM DESCONTO
+         */
         function updatePreview() {
             const valorMensalidade = parseFloat(document.getElementById('valor-mensalidade').value) || 0;
             const quantidadeParcelas = parseInt(document.getElementById('quantidade-parcelas').value) || 0;
             const dataPrimeiro = document.getElementById('data-primeiro').value;
+            const discountValue = discountEnabled ? (parseFloat(document.getElementById('discount-value').value) || 0) : 0;
             
             const previewContainer = document.getElementById('preview-container');
             const totalCalculation = document.getElementById('total-calculation');
+            const discountSummaryCard = document.getElementById('discount-summary-card');
             
             if (valorMensalidade <= 0 || quantidadeParcelas <= 0) {
                 previewContainer.innerHTML = `
@@ -605,25 +700,42 @@
                 return;
             }
             
-            // Calcular datas
+            // Calcular datas e valores
             const datas = calcularDatasVencimento(dataPrimeiro, quantidadeParcelas);
             const valorTotal = valorMensalidade * quantidadeParcelas;
+            const valorComDesconto = valorMensalidade - discountValue;
+            const totalComDesconto = valorComDesconto * quantidadeParcelas;
+            const economiaTotal = discountValue * quantidadeParcelas;
             
-            // Atualizar preview
+            // Atualizar preview COM DESCONTO
             let previewHtml = `
                 <div class="small mb-3">
-                    <strong>📅 Cronograma de Vencimentos:</strong>
+                    <strong>📅 Cronograma de Vencimentos${discountEnabled ? ' COM DESCONTO' : ''}:</strong>
                 </div>
             `;
             
             datas.slice(0, Math.min(5, quantidadeParcelas)).forEach((data, index) => {
+                const hasDiscount = discountEnabled && discountValue > 0;
+                const parcelaClass = hasDiscount ? 'parcela-preview with-discount' : 'parcela-preview';
+                
                 previewHtml += `
-                    <div class="parcela-preview">
+                    <div class="${parcelaClass}">
                         <div class="d-flex justify-content-between align-items-center">
                             <span><strong>Parcela ${index + 1}/${quantidadeParcelas}</strong></span>
-                            <span class="text-success fw-bold">R$ ${valorMensalidade.toFixed(2).replace('.', ',')}</span>
+                            <div class="text-end">
+                                ${hasDiscount ? `
+                                    <div class="valor-original">R$ ${valorMensalidade.toFixed(2).replace('.', ',')}</div>
+                                    <div class="valor-com-desconto">R$ ${valorComDesconto.toFixed(2).replace('.', ',')}</div>
+                                    <span class="economia-badge">-R$ ${discountValue.toFixed(2).replace('.', ',')}</span>
+                                ` : `
+                                    <span class="text-success fw-bold">R$ ${valorMensalidade.toFixed(2).replace('.', ',')}</span>
+                                `}
+                            </div>
                         </div>
-                        <small class="text-muted">${formatarData(data)}</small>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <small class="text-muted">${formatarData(data)}</small>
+                            ${hasDiscount ? '<small class="text-success"><i class="bi bi-clock"></i> Desconto até vencimento</small>' : ''}
+                        </div>
                     </div>
                 `;
             });
@@ -633,6 +745,7 @@
                     <div class="text-center text-muted small">
                         <i class="bi bi-three-dots"></i>
                         <br>e mais ${quantidadeParcelas - 5} mensalidades...
+                        ${discountEnabled && discountValue > 0 ? '<br><span class="text-success">todas com desconto</span>' : ''}
                     </div>
                 `;
             }
@@ -645,9 +758,28 @@
             document.getElementById('parcelas-info').textContent = 
                 `${quantidadeParcelas} mensalidades de R$ ${valorMensalidade.toFixed(2).replace('.', ',')}`;
             
+            // Mostrar resumo do desconto se ativo
+            if (discountEnabled && discountValue > 0) {
+                document.getElementById('summary-discount-per-installment').textContent = 
+                    `R$ ${discountValue.toFixed(2).replace('.', ',')}`;
+                document.getElementById('summary-total-economy').textContent = 
+                    `R$ ${economiaTotal.toFixed(2).replace('.', ',')}`;
+                discountSummaryCard.style.display = 'block';
+            } else {
+                discountSummaryCard.style.display = 'none';
+            }
+            
             totalCalculation.style.display = 'block';
+            
+            // Atualizar preview do desconto
+            if (discountEnabled) {
+                updateDiscountPreview();
+            }
         }
         
+        /**
+         * Calcular datas de vencimento
+         */
         function calcularDatasVencimento(dataPrimeiro, quantidade) {
             const datas = [];
             const dataBase = new Date(dataPrimeiro);
@@ -657,7 +789,7 @@
                     datas.push(new Date(dataBase));
                 } else {
                     const proximaData = new Date(dataBase);
-                    proximaData.setMonth(proximaData.getMonth() + i);
+                    proximaData.setMonth(dataBase.getMonth() + i);
                     
                     // Ajustar se o dia não existir no mês
                     if (proximaData.getDate() !== dataBase.getDate()) {
@@ -671,6 +803,9 @@
             return datas.map(date => date.toISOString().split('T')[0]);
         }
         
+        /**
+         * Formatar data
+         */
         function formatarData(dateString) {
             const date = new Date(dateString);
             return date.toLocaleDateString('pt-BR', { 
@@ -690,7 +825,7 @@
                     const select = document.getElementById('customer-select');
                     select.innerHTML = '<option value="">Selecione um cliente</option>';
                     
-                    data.data.forEach(customer => {
+                    data.data.foreach(customers => {
                         select.innerHTML += `
                             <option value="${customer.id}">
                                 ${customer.name} (${customer.email})
@@ -702,7 +837,7 @@
                 console.error('Erro ao carregar clientes:', error);
             }
         }
-        
+
         async function loadWallets() {
             try {
                 const response = await fetch('api.php?action=list-wallets');
@@ -823,177 +958,61 @@
             }
         }
         
-        // ===== AÇÕES DO SISTEMA =====
-        async function viewPlano(planoId) {
-            selectedPlanoId = planoId;
+        /**
+         * Validar formulário antes do envio
+         */
+        function validateForm() {
+            const valorMensalidade = parseFloat(document.getElementById('valor-mensalidade').value) || 0;
+            const discountValue = discountEnabled ? (parseFloat(document.getElementById('discount-value').value) || 0) : 0;
             
-            try {
-                const response = await fetch(`api.php?action=get-plano-details&plano_id=${planoId}`);
-                const data = await response.json();
-                
-                if (data.success) {
-                    displayPlanoDetails(data.data);
-                    new bootstrap.Modal(document.getElementById('planoModal')).show();
-                } else {
-                    showToast('Erro ao carregar detalhes do plano', 'error');
+            // Validar desconto se ativo
+            if (discountEnabled) {
+                if (discountValue <= 0) {
+                    showToast('Informe um valor de desconto válido!', 'error');
+                    return false;
                 }
-            } catch (error) {
-                showToast('Erro de conexão: ' + error.message, 'error');
-            }
-        }
-        
-        function displayPlanoDetails(plano) {
-            const detailsContainer = document.getElementById('plano-details');
-            
-            const statusClass = plano.status === 'ATIVO' ? 'success' : 
-                              plano.status === 'CANCELADO' ? 'danger' : 'secondary';
-            
-            let html = `
-                <div class="row mb-4">
-                    <div class="col-md-8">
-                        <h6>${plano.customer_name}</h6>
-                        <p class="text-muted mb-1">${plano.customer_email}</p>
-                        <p class="mb-0">${plano.descricao}</p>
-                    </div>
-                    <div class="col-md-4 text-end">
-                        <span class="badge bg-${statusClass} mb-2">${plano.status}</span>
-                        <br>
-                        <small class="text-muted">ID: ${plano.id}</small>
-                    </div>
-                </div>
                 
-                <div class="row mb-4">
-                    <div class="col-md-3 text-center">
-                        <div class="border rounded p-3">
-                            <div class="h5 text-primary mb-1">R$ ${parseFloat(plano.valor_mensalidade).toFixed(2).replace('.', ',')}</div>
-                            <small class="text-muted">Valor Mensal</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3 text-center">
-                        <div class="border rounded p-3">
-                            <div class="h5 text-info mb-1">${plano.quantidade_parcelas}</div>
-                            <small class="text-muted">Parcelas</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3 text-center">
-                        <div class="border rounded p-3">
-                            <div class="h5 text-success mb-1">${plano.parcelas_pagas}</div>
-                            <small class="text-muted">Pagas</small>
-                        </div>
-                    </div>
-                    <div class="col-md-3 text-center">
-                        <div class="border rounded p-3">
-                            <div class="h5 text-warning mb-1">R$ ${parseFloat(plano.valor_recebido || 0).toFixed(2).replace('.', ',')}</div>
-                            <small class="text-muted">Recebido</small>
-                        </div>
-                    </div>
-                </div>
+                if (discountValue >= valorMensalidade) {
+                    showToast('Desconto não pode ser maior ou igual ao valor da parcela!', 'error');
+                    return false;
+                }
                 
-                <div class="mb-4">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <strong>Progresso do Plano</strong>
-                        <span>${plano.percentual_concluido.toFixed(1)}%</span>
-                    </div>
-                    <div class="progress" style="height: 10px;">
-                        <div class="progress-bar bg-success" style="width: ${plano.percentual_concluido}%"></div>
-                    </div>
-                </div>
-            `;
-            
-            if (plano.pagamentos && plano.pagamentos.length > 0) {
-                html += `
-                    <h6 class="border-bottom pb-2 mb-3">📋 Mensalidades</h6>
-                    <div class="table-responsive">
-                        <table class="table table-sm">
-                            <thead>
-                                <tr>
-                                    <th>Parcela</th>
-                                    <th>Vencimento</th>
-                                    <th>Valor</th>
-                                    <th>Status</th>
-                                    <th>Ações</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                `;
-                
-                plano.pagamentos.forEach(pagamento => {
-                    const statusClass = getPaymentStatusClass(pagamento.status);
-                    const statusText = getPaymentStatusText(pagamento.status);
-                    
-                    html += `
-                        <tr>
-                            <td><strong>${pagamento.numero_parcela}/${plano.quantidade_parcelas}</strong></td>
-                            <td>${new Date(pagamento.due_date).toLocaleDateString('pt-BR')}</td>
-                            <td>R$ ${parseFloat(pagamento.value).toFixed(2).replace('.', ',')}</td>
-                            <td><span class="badge bg-${statusClass}">${statusText}</span></td>
-                            <td>
-                                <div class="btn-group" role="group">
-                                    <button class="btn btn-outline-primary btn-sm" 
-                                            onclick="copyPaymentId('${pagamento.id}')" 
-                                            data-bs-toggle="tooltip" title="Copiar ID">
-                                        <i class="bi bi-clipboard"></i>
-                                    </button>
-                                    ${pagamento.invoice_url ? `
-                                    <a href="${pagamento.invoice_url}" target="_blank" 
-                                       class="btn btn-outline-success btn-sm" 
-                                       data-bs-toggle="tooltip" title="Ver cobrança">
-                                        <i class="bi bi-eye"></i>
-                                    </a>
-                                    ` : ''}
-                                </div>
-                            </td>
-                        </tr>
-                    `;
-                });
-                
-                html += `
-                            </tbody>
-                        </table>
-                    </div>
-                `;
+                const maxDiscount = valorMensalidade * 0.50;
+                if (discountValue > maxDiscount) {
+                    showToast(`Desconto máximo: R$ ${maxDiscount.toFixed(2).replace('.', ',')} (50% da parcela)`, 'error');
+                    return false;
+                }
             }
             
-            detailsContainer.innerHTML = html;
+            return true;
         }
         
-        function getPaymentStatusClass(status) {
-            const statusMap = {
-                'RECEIVED': 'success',
-                'PENDING': 'warning',
-                'OVERDUE': 'danger',
-                'CANCELED': 'secondary',
-                'CONFIRMED': 'info'
-            };
-            return statusMap[status] || 'secondary';
-        }
-        
-        function getPaymentStatusText(status) {
-            const statusMap = {
-                'RECEIVED': 'Pago',
-                'PENDING': 'Pendente',
-                'OVERDUE': 'Vencido',
-                'CANCELED': 'Cancelado',
-                'CONFIRMED': 'Confirmado'
-            };
-            return statusMap[status] || status;
-        }
-        
-        function confirmCancelPlano(planoId, customerName) {
-            if (confirm(`⚠️ ATENÇÃO: Deseja cancelar o plano de mensalidades de "${customerName}"?\n\nEsta ação irá:\n- Cancelar todas as parcelas pendentes\n- Manter as parcelas já pagas\n- Não poderá ser desfeita\n\nConfirma o cancelamento?`)) {
-                const motivo = prompt('Informe o motivo do cancelamento (opcional):') || '';
-                cancelarPlanoAction(planoId, motivo);
+        /**
+         * Processar envio do formulário
+         */
+        async function submitForm(event) {
+            event.preventDefault();
+            
+            if (!validateForm()) {
+                return;
             }
-        }
-        
-        async function cancelarPlanoAction(planoId, motivo) {
+            
+            const formData = new FormData(document.getElementById('mensalidade-form'));
+            
+            // Adicionar dados do desconto se ativo
+            if (discountEnabled) {
+                const discountValue = parseFloat(document.getElementById('discount-value').value) || 0;
+                formData.append('discount_enabled', '1');
+                formData.append('discount_value', discountValue.toFixed(2));
+                formData.append('discount_type', 'FIXED');
+                formData.append('discount_deadline_type', 'DUE_DATE');
+            } else {
+                formData.append('discount_enabled', '0');
+            }
+            
             try {
-                showToast('Cancelando plano...', 'info');
-                
-                const formData = new FormData();
-                formData.append('action', 'cancelar_plano');
-                formData.append('plano_id', planoId);
-                formData.append('motivo', motivo);
+                showToast('Criando mensalidades com desconto...', 'info');
+                document.getElementById('submit-mensalidade').disabled = true;
                 
                 const response = await fetch('', {
                     method: 'POST',
@@ -1003,246 +1022,42 @@
                 const result = await response.text();
                 
                 if (result.includes('alert-success')) {
-                    showToast('Plano cancelado com sucesso!', 'success');
+                    showToast('Mensalidades criadas com sucesso!', 'success');
+                    
+                    // Exibir resumo do que foi criado
+                    const valorMensalidade = parseFloat(document.getElementById('valor-mensalidade').value);
+                    const quantidadeParcelas = parseInt(document.getElementById('quantidade-parcelas').value);
+                    const discountValue = discountEnabled ? (parseFloat(document.getElementById('discount-value').value) || 0) : 0;
+                    
+                    let successMessage = `✅ ${quantidadeParcelas} mensalidades criadas!<br>`;
+                    successMessage += `💰 Valor: R$ ${valorMensalidade.toFixed(2).replace('.', ',')}<br>`;
+                    
+                    if (discountEnabled && discountValue > 0) {
+                        const economiaTotal = discountValue * quantidadeParcelas;
+                        successMessage += `🏷️ Desconto: R$ ${discountValue.toFixed(2).replace('.', ',')} por parcela<br>`;
+                        successMessage += `💚 Economia total possível: R$ ${economiaTotal.toFixed(2).replace('.', ',')}`;
+                    }
+                    
                     setTimeout(() => {
-                        location.reload();
+                        if (confirm(successMessage + '\n\nDeseja criar outra mensalidade?')) {
+                            location.reload();
+                        } else {
+                            window.location.href = 'index.php';
+                        }
                     }, 2000);
                 } else {
-                    showToast('Erro ao cancelar plano', 'error');
+                    showToast('Erro ao criar mensalidades. Verifique os dados.', 'error');
+                    document.getElementById('submit-mensalidade').disabled = false;
                 }
             } catch (error) {
                 showToast('Erro de conexão: ' + error.message, 'error');
+                document.getElementById('submit-mensalidade').disabled = false;
             }
         }
         
-        function cancelarPlano() {
-            if (selectedPlanoId) {
-                const motivo = prompt('Informe o motivo do cancelamento (opcional):') || '';
-                cancelarPlanoAction(selectedPlanoId, motivo);
-                bootstrap.Modal.getInstance(document.getElementById('planoModal')).hide();
-            }
-        }
-        
-        // ===== FUNÇÕES DE RELATÓRIO =====
-        async function gerarRelatorio() {
-            const inicio = document.getElementById('relatorio-inicio').value;
-            const fim = document.getElementById('relatorio-fim').value;
-            const resultsContainer = document.getElementById('relatorio-results');
-            
-            if (!inicio || !fim) {
-                showToast('Selecione o período para o relatório', 'warning');
-                return;
-            }
-            
-            try {
-                showToast('Gerando relatório...', 'info');
-                resultsContainer.style.display = 'block';
-                resultsContainer.innerHTML = `
-                    <div class="text-center">
-                        <div class="spinner-border text-primary" role="status">
-                            <span class="visually-hidden">Gerando...</span>
-                        </div>
-                        <p class="mt-2">Processando dados...</p>
-                    </div>
-                `;
-                
-                const response = await fetch(`api.php?action=relatorio-mensalidades&inicio=${inicio}&fim=${fim}`);
-                const data = await response.json();
-                
-                if (data.success) {
-                    displayRelatorioResults(data.data, inicio, fim);
-                    showToast('Relatório gerado com sucesso!', 'success');
-                } else {
-                    throw new Error(data.error || 'Erro desconhecido');
-                }
-            } catch (error) {
-                resultsContainer.innerHTML = `
-                    <div class="alert alert-danger">
-                        <i class="bi bi-exclamation-triangle"></i>
-                        Erro ao gerar relatório: ${error.message}
-                    </div>
-                `;
-                showToast('Erro ao gerar relatório', 'error');
-            }
-        }
-        
-        function displayRelatorioResults(data, inicio, fim) {
-            const container = document.getElementById('relatorio-results');
-            
-            let html = `
-                <div class="alert alert-info">
-                    <h6>📊 Relatório de Mensalidades</h6>
-                    <p><strong>Período:</strong> ${new Date(inicio).toLocaleDateString('pt-BR')} a ${new Date(fim).toLocaleDateString('pt-BR')}</p>
-                </div>
-                
-                <div class="row mb-4">
-                    <div class="col-md-3">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h4 class="text-primary">${data.total_planos || 0}</h4>
-                                <p class="text-muted mb-0">Planos Criados</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h4 class="text-success">${data.total_mensalidades || 0}</h4>
-                                <p class="text-muted mb-0">Mensalidades</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h4 class="text-warning">${data.mensalidades_pagas || 0}</h4>
-                                <p class="text-muted mb-0">Pagas</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="card text-center">
-                            <div class="card-body">
-                                <h4 class="text-info">R$ ${parseFloat(data.valor_total || 0).toFixed(2).replace('.', ',')}</h4>
-                                <p class="text-muted mb-0">Valor Total</p>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            if (data.planos && data.planos.length > 0) {
-                html += `
-                    <div class="card">
-                        <div class="card-header">
-                            <h6>📋 Planos do Período</h6>
-                        </div>
-                        <div class="card-body">
-                            <div class="table-responsive">
-                                <table class="table table-hover">
-                                    <thead>
-                                        <tr>
-                                            <th>Cliente</th>
-                                            <th>Valor Mensal</th>
-                                            <th>Parcelas</th>
-                                            <th>Status</th>
-                                            <th>Progresso</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                `;
-                
-                data.planos.forEach(plano => {
-                    const progress = (plano.parcelas_pagas / plano.quantidade_parcelas) * 100;
-                    html += `
-                        <tr>
-                            <td>
-                                <strong>${plano.customer_name}</strong><br>
-                                <small class="text-muted">${plano.descricao}</small>
-                            </td>
-                            <td>R$ ${parseFloat(plano.valor_mensalidade).toFixed(2).replace('.', ',')}</td>
-                            <td>${plano.quantidade_parcelas}x</td>
-                            <td><span class="badge bg-${plano.status === 'ATIVO' ? 'success' : 'secondary'}">${plano.status}</span></td>
-                            <td>
-                                <div class="progress" style="width: 100px; height: 20px;">
-                                    <div class="progress-bar" style="width: ${progress}%">${Math.round(progress)}%</div>
-                                </div>
-                            </td>
-                        </tr>
-                    `;
-                });
-                
-                html += `
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                `;
-            }
-            
-            container.innerHTML = html;
-        }
-        
-        async function loadStats() {
-            const container = document.getElementById('stats-container');
-            
-            try {
-                const response = await fetch('api.php?action=stats-mensalidades');
-                const data = await response.json();
-                
-                if (data.success) {
-                    const stats = data.data;
-                    
-                    container.innerHTML = `
-                        <div class="row text-center">
-                            <div class="col-6">
-                                <div class="border rounded p-3 mb-3">
-                                    <h5 class="text-primary">${stats.planos_ativos || 0}</h5>
-                                    <small class="text-muted">Planos Ativos</small>
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <div class="border rounded p-3 mb-3">
-                                    <h5 class="text-success">${stats.mensalidades_hoje || 0}</h5>
-                                    <small class="text-muted">Vencem Hoje</small>
-                                </div>
-                            </div>
-                            <div class="col-12">
-                                <div class="border rounded p-3 mb-3">
-                                    <h6 class="text-warning">R$ ${parseFloat(stats.receita_mensal || 0).toFixed(2).replace('.', ',')}</h6>
-                                    <small class="text-muted">Receita Mensal Prevista</small>
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <hr>
-                        
-                        <h6 class="mb-3">🎯 Metas do Mês</h6>
-                        <div class="mb-3">
-                            <div class="d-flex justify-content-between mb-1">
-                                <small>Meta de Recebimentos</small>
-                                <small>${stats.meta_progresso || 0}%</small>
-                            </div>
-                            <div class="progress">
-                                <div class="progress-bar" style="width: ${stats.meta_progresso || 0}%"></div>
-                            </div>
-                        </div>
-                    `;
-                } else {
-                    container.innerHTML = `
-                        <div class="alert alert-warning">
-                            <i class="bi bi-info-circle"></i>
-                            Erro ao carregar estatísticas
-                        </div>
-                    `;
-                }
-            } catch (error) {
-                container.innerHTML = `
-                    <div class="alert alert-danger">
-                        <i class="bi bi-exclamation-triangle"></i>
-                        Erro de conexão
-                    </div>
-                `;
-            }
-        }
-        
-        // ===== FUNÇÕES AUXILIARES =====
-        function copyPaymentId(paymentId) {
-            navigator.clipboard.writeText(paymentId).then(() => {
-                showToast('ID copiado!', 'success');
-            });
-        }
-        
-        function refreshPlanos() {
-            loadPlanos();
-            showToast('Lista atualizada!', 'info');
-        }
-        
-        function exportPlanos() {
-            showToast('Funcionalidade em desenvolvimento', 'info');
-        }
-        
+        /**
+         * Mostrar toast
+         */
         function showToast(message, type = 'info') {
             const toastClass = {
                 success: 'text-bg-success',
@@ -1284,36 +1099,29 @@
         
         // ===== INICIALIZAÇÃO =====
         document.addEventListener('DOMContentLoaded', function() {
-            // Navegação por seções
-            document.querySelectorAll('[data-section]').forEach(link => {
-                link.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const section = e.target.closest('[data-section]').dataset.section;
-                    showSection(section);
-                });
-            });
-            
-            // Atualizar preview quando campos mudarem
+            // Event listeners para atualizar preview
             document.getElementById('valor-mensalidade').addEventListener('input', updatePreview);
             document.getElementById('quantidade-parcelas').addEventListener('change', updatePreview);
             document.getElementById('data-primeiro').addEventListener('change', updatePreview);
+            document.getElementById('discount-value').addEventListener('input', function() {
+                updateDiscountPreview();
+                updatePreview();
+            });
             
             // Controle do botão de envio
             document.getElementById('confirm-mensalidade').addEventListener('change', function() {
                 document.getElementById('submit-mensalidade').disabled = !this.checked;
             });
             
+            // Event listener para o formulário
+            document.getElementById('mensalidade-form').addEventListener('submit', submitForm);
+            
             // Carregar dados iniciais
             loadCustomers();
             loadWallets();
             
-            // Tooltips
-            const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-            tooltipTriggerList.map(function (tooltipTriggerEl) {
-                return new bootstrap.Tooltip(tooltipTriggerEl);
-            });
-            
-            console.log('🎉 Sistema de Mensalidades Parceladas carregado!');
+            console.log('🎉 Sistema de Mensalidades com Desconto carregado!');
+            console.log('💰 Funcionalidade: Desconto até vencimento ativada');
         });
     </script>
 </body>

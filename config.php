@@ -1,8 +1,8 @@
 <?php
 /**
- * Configurações do Sistema de Split ASAAS - Versão Multi-Tenant + Mensalidades
+ * Configurações do Sistema - ATUALIZADO COM SUPORTE A DESCONTO
  * Arquivo: config.php
- * Versão com suporte a múltiplos polos E mensalidades parceladas
+ * Versão com mensalidades E desconto em parcelas
  */
 
 // Configurações MASTER (usadas apenas pelo admin master)
@@ -18,7 +18,7 @@ define('DB_USER', getenv('DB_USER') ?: 'bankuser');
 define('DB_PASS', getenv('DB_PASS') ?: 'lKVX4Ew0u7I89hAUuDCm');
 define('DB_CHARSET', 'utf8mb4');
 
-// Configurações de Sistema
+// Configurações de mensalidades COM DESCONTO
 define('LOG_LEVEL', getenv('LOG_LEVEL') ?: 'INFO');
 define('LOG_RETENTION_DAYS', 30);
 define('WEBHOOK_TIMEOUT', 30);
@@ -28,9 +28,11 @@ define('MAX_INSTALLMENTS', 24);
 define('MIN_INSTALLMENTS', 2);
 define('MIN_INSTALLMENT_VALUE', 1.00);
 define('MAX_INSTALLMENT_VALUE', 50000.00);
+define('MAX_DISCOUNT_PERCENTAGE', 50); // 50% máximo de desconto
+define('DEFAULT_DISCOUNT_TYPE', 'FIXED'); // Tipo padrão: valor fixo
 
 /**
- * Classe para gerenciar conexão com banco de dados (ATUALIZADA COM MENSALIDADES)
+ * Classe DatabaseManager ATUALIZADA COM DESCONTO
  */
 class DatabaseManager {
     
@@ -47,7 +49,7 @@ class DatabaseManager {
             ]);
             
             // Log de conexão bem-sucedida
-            error_log("DatabaseManager: Conexão estabelecida com sucesso");
+            error_log("DatabaseManager: Conexão estabelecida com suporte a desconto");
             
         } catch (PDOException $e) {
             error_log("DatabaseManager: Erro na conexão: " . $e->getMessage());
@@ -66,25 +68,28 @@ class DatabaseManager {
         return $this->pdo;
     }
     
-    // ====================================================
-    // NOVOS MÉTODOS PARA MENSALIDADES/PARCELAMENTOS
-    // ====================================================
-    
     /**
-     * Salvar registro de parcelamento/mensalidade
+     * ===== MÉTODO ATUALIZADO: SALVAR MENSALIDADE COM DESCONTO =====
      */
     public function saveInstallmentRecord($installmentData) {
         try {
-            error_log("Salvando registro de parcelamento: " . json_encode($installmentData));
+            error_log("Salvando mensalidade COM DESCONTO: " . json_encode($installmentData));
             
             $stmt = $this->pdo->prepare("
                 INSERT INTO installments (
                     installment_id, polo_id, customer_id, installment_count, 
                     installment_value, total_value, first_due_date, 
                     billing_type, description, has_splits, splits_count, 
-                    created_by, first_payment_id, status, created_at
+                    created_by, first_payment_id, status,
+                    
+                    -- NOVOS CAMPOS DE DESCONTO --
+                    has_discount, discount_value, discount_type, 
+                    discount_deadline_type, discount_description,
+                    
+                    created_at
                 ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', NOW()
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE',
+                    ?, ?, ?, ?, ?, NOW()
                 )
             ");
             
@@ -101,32 +106,93 @@ class DatabaseManager {
                 $installmentData['has_splits'] ? 1 : 0,
                 $installmentData['splits_count'],
                 $installmentData['created_by'],
-                $installmentData['first_payment_id']
+                $installmentData['first_payment_id'],
+                
+                // DADOS DO DESCONTO
+                $installmentData['has_discount'] ?? 0,
+                $installmentData['discount_value'] ?? null,
+                $installmentData['discount_type'] ?? null,
+                $installmentData['discount_deadline_type'] ?? null,
+                $installmentData['discount_description'] ?? null
             ]);
             
             if ($result) {
                 $recordId = $this->pdo->lastInsertId();
-                error_log("Parcelamento salvo com sucesso - ID: {$recordId}");
+                error_log("Mensalidade com desconto salva - ID: {$recordId}");
                 return $recordId;
             } else {
-                throw new Exception("Falha ao executar inserção do parcelamento");
+                throw new Exception("Falha ao executar inserção da mensalidade");
             }
             
         } catch (PDOException $e) {
-            error_log("Erro ao salvar parcelamento: " . $e->getMessage());
+            error_log("Erro ao salvar mensalidade com desconto: " . $e->getMessage());
             
             // Se tabela não existe, tentar criar
-            if (strpos($e->getMessage(), "doesn't exist") !== false || 
-                strpos($e->getMessage(), "Table") !== false) {
-                
-                error_log("Tabela installments não existe, tentando criar...");
-                if ($this->createInstallmentsTable()) {
-                    // Tentar novamente após criar a tabela
+            if (strpos($e->getMessage(), "doesn't exist") !== false) {
+                error_log("Tabela installments não existe, criando com campos de desconto...");
+                if ($this->createInstallmentsTableWithDiscount()) {
                     return $this->saveInstallmentRecord($installmentData);
                 }
             }
             
-            throw new Exception("Erro ao salvar parcelamento: " . $e->getMessage());
+            throw new Exception("Erro ao salvar mensalidade: " . $e->getMessage());
+        }
+    }
+
+        /**
+     * ===== NOVA FUNÇÃO: CRIAR TABELA COM CAMPOS DE DESCONTO =====
+     */
+    public function createInstallmentsTableWithDiscount() {
+        try {
+            error_log("Criando tabela installments COM CAMPOS DE DESCONTO...");
+            
+            $sql = "CREATE TABLE IF NOT EXISTS installments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                installment_id VARCHAR(100) NOT NULL UNIQUE,
+                polo_id INT NULL,
+                customer_id VARCHAR(100) NOT NULL,
+                installment_count INT NOT NULL,
+                installment_value DECIMAL(10,2) NOT NULL,
+                total_value DECIMAL(10,2) NOT NULL,
+                first_due_date DATE NOT NULL,
+                billing_type VARCHAR(20) NOT NULL,
+                description TEXT,
+                has_splits BOOLEAN DEFAULT 0,
+                splits_count INT DEFAULT 0,
+                created_by INT,
+                first_payment_id VARCHAR(100),
+                status ENUM('ACTIVE', 'CANCELLED', 'COMPLETED') DEFAULT 'ACTIVE',
+                
+                -- ===== CAMPOS DE DESCONTO =====
+                has_discount BOOLEAN DEFAULT 0,
+                discount_value DECIMAL(10,2) NULL COMMENT 'Valor fixo do desconto por parcela',
+                discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED' COMMENT 'Tipo do desconto',
+                discount_deadline_type ENUM('DUE_DATE', 'DAYS_BEFORE', 'CUSTOM') DEFAULT 'DUE_DATE' COMMENT 'Tipo de prazo',
+                discount_description TEXT NULL COMMENT 'Descrição do desconto',
+                
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_installment_id (installment_id),
+                INDEX idx_polo_id (polo_id),
+                INDEX idx_customer_id (customer_id),
+                INDEX idx_status (status),
+                INDEX idx_has_discount (has_discount),
+                INDEX idx_created_at (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+            COMMENT='Tabela de mensalidades parceladas COM SUPORTE A DESCONTO'";
+            
+            $this->pdo->exec($sql);
+            error_log("Tabela installments criada com campos de desconto");
+            
+            // Criar também tabela de parcelas individuais
+            $this->createInstallmentPaymentsTable();
+            
+            return true;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao criar tabela com desconto: " . $e->getMessage());
+            return false;
         }
     }
     
@@ -178,11 +244,11 @@ class DatabaseManager {
     }
     
     /**
-     * Criar tabela para acompanhar parcelas individuais
+     * ===== ATUALIZAR TABELA DE PARCELAS PARA RASTREAR DESCONTO APLICADO =====
      */
     public function createInstallmentPaymentsTable() {
         try {
-            error_log("Criando tabela installment_payments...");
+            error_log("Criando/atualizando tabela installment_payments com campos de desconto...");
             
             $sql = "CREATE TABLE IF NOT EXISTS installment_payments (
                 id INT PRIMARY KEY AUTO_INCREMENT,
@@ -193,6 +259,13 @@ class DatabaseManager {
                 value DECIMAL(10,2) NOT NULL,
                 status VARCHAR(20) DEFAULT 'PENDING',
                 paid_date DATETIME NULL,
+                
+                -- ===== CAMPOS PARA RASTREAR DESCONTO APLICADO =====
+                original_value DECIMAL(10,2) NULL COMMENT 'Valor original sem desconto',
+                discount_applied DECIMAL(10,2) DEFAULT 0 COMMENT 'Valor do desconto aplicado',
+                discount_applied_date DATETIME NULL COMMENT 'Data em que desconto foi aplicado',
+                final_value DECIMAL(10,2) NULL COMMENT 'Valor final após desconto',
+                
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 
@@ -200,12 +273,14 @@ class DatabaseManager {
                 INDEX idx_payment_id (payment_id),
                 INDEX idx_due_date (due_date),
                 INDEX idx_status (status),
+                INDEX idx_discount_applied (discount_applied),
                 
                 FOREIGN KEY (installment_id) REFERENCES installments(installment_id) ON DELETE CASCADE
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            COMMENT='Parcelas individuais COM RASTREAMENTO DE DESCONTO'";
             
             $this->pdo->exec($sql);
-            error_log("Tabela installment_payments criada com sucesso");
+            error_log("Tabela installment_payments criada/atualizada com campos de desconto");
             
             return true;
             
@@ -214,6 +289,37 @@ class DatabaseManager {
             return false;
         }
     }
+
+        /**
+     * ===== FUNÇÃO PARA REGISTRAR APLICAÇÃO DE DESCONTO =====
+     */
+    public function recordDiscountApplication($paymentId, $originalValue, $discountValue, $finalValue) {
+        try {
+            $stmt = $this->pdo->prepare("
+                UPDATE installment_payments 
+                SET 
+                    original_value = ?,
+                    discount_applied = ?,
+                    discount_applied_date = NOW(),
+                    final_value = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE payment_id = ?
+            ");
+            
+            $result = $stmt->execute([$originalValue, $discountValue, $finalValue, $paymentId]);
+            
+            if ($result) {
+                error_log("Desconto registrado: Payment {$paymentId} - Desconto: R$ {$discountValue}");
+            }
+            
+            return $result;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao registrar aplicação de desconto: " . $e->getMessage());
+            return false;
+        }
+    }
+
     
     /**
      * Obter parcelamentos por período (com filtro de polo)
@@ -327,6 +433,146 @@ class DatabaseManager {
         }
     }
     
+        /**
+     * ===== FUNÇÃO ATUALIZADA: ESTATÍSTICAS COM DESCONTO =====
+     */
+    public function getInstallmentStatsWithDiscount($poloId = null) {
+        try {
+            $query = "
+                SELECT 
+                    COUNT(*) as total_installments,
+                    SUM(installment_count) as total_payments_expected,
+                    SUM(total_value) as total_value_expected,
+                    AVG(installment_count) as avg_installments_per_customer,
+                    AVG(installment_value) as avg_installment_value,
+                    COUNT(CASE WHEN status = 'ACTIVE' THEN 1 END) as active_installments,
+                    COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed_installments,
+                    COUNT(CASE WHEN has_splits = 1 THEN 1 END) as installments_with_splits,
+                    
+                    -- ===== ESTATÍSTICAS DE DESCONTO =====
+                    COUNT(CASE WHEN has_discount = 1 THEN 1 END) as installments_with_discount,
+                    SUM(CASE WHEN has_discount = 1 THEN (discount_value * installment_count) ELSE 0 END) as total_discount_potential,
+                    AVG(CASE WHEN has_discount = 1 THEN discount_value ELSE NULL END) as avg_discount_value,
+                    
+                    -- Taxa de adoção do desconto
+                    CASE 
+                        WHEN COUNT(*) > 0 THEN 
+                            ROUND((COUNT(CASE WHEN has_discount = 1 THEN 1 END) / COUNT(*)) * 100, 2)
+                        ELSE 0 
+                    END as discount_adoption_rate
+                    
+                FROM installments
+                WHERE 1=1
+            ";
+            
+            $params = [];
+            
+            if ($poloId !== null) {
+                $query .= " AND polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            $result = $stmt->fetch();
+            
+            // Adicionar estatísticas calculadas
+            $result['discount_efficiency'] = 0;
+            if ($result['installments_with_discount'] > 0 && $result['total_discount_potential'] > 0) {
+                // Calcular eficiência do desconto (quantos descontos foram realmente utilizados)
+                $stmt2 = $this->pdo->prepare("
+                    SELECT COUNT(*) as discounts_used 
+                    FROM installment_payments ip
+                    JOIN installments i ON ip.installment_id = i.installment_id
+                    WHERE i.has_discount = 1 AND ip.status = 'RECEIVED' AND ip.discount_applied > 0
+                    " . ($poloId !== null ? " AND i.polo_id = ?" : "")
+                );
+                
+                if ($poloId !== null) {
+                    $stmt2->execute([$poloId]);
+                } else {
+                    $stmt2->execute();
+                }
+                
+                $discountStats = $stmt2->fetch();
+                $result['discounts_used'] = $discountStats['discounts_used'] ?? 0;
+                
+                // Calcular taxa de utilização do desconto
+                if ($result['total_payments_expected'] > 0) {
+                    $result['discount_efficiency'] = round(
+                        ($result['discounts_used'] / $result['total_payments_expected']) * 100, 2
+                    );
+                }
+            }
+            
+            return $result;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao obter estatísticas com desconto: " . $e->getMessage());
+            return [
+                'total_installments' => 0,
+                'total_payments_expected' => 0,
+                'total_value_expected' => 0,
+                'avg_installments_per_customer' => 0,
+                'avg_installment_value' => 0,
+                'active_installments' => 0,
+                'completed_installments' => 0,
+                'installments_with_splits' => 0,
+                'installments_with_discount' => 0,
+                'total_discount_potential' => 0,
+                'avg_discount_value' => 0,
+                'discount_adoption_rate' => 0,
+                'discount_efficiency' => 0,
+                'discounts_used' => 0
+            ];
+        }
+    }
+
+        /**
+     * ===== FUNÇÃO PARA ATUALIZAR TABELA EXISTENTE =====
+     */
+    public function addDiscountFieldsToExistingTable() {
+        try {
+            error_log("Adicionando campos de desconto à tabela existente...");
+            
+            // Verificar se campos já existem
+            $stmt = $this->pdo->query("SHOW COLUMNS FROM installments LIKE 'has_discount'");
+            if ($stmt->rowCount() > 0) {
+                error_log("Campos de desconto já existem na tabela");
+                return true;
+            }
+            
+            // Adicionar campos de desconto
+            $alterQueries = [
+                "ALTER TABLE installments ADD COLUMN has_discount BOOLEAN DEFAULT 0 AFTER status",
+                "ALTER TABLE installments ADD COLUMN discount_value DECIMAL(10,2) NULL COMMENT 'Valor fixo do desconto por parcela' AFTER has_discount",
+                "ALTER TABLE installments ADD COLUMN discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED' COMMENT 'Tipo do desconto' AFTER discount_value",
+                "ALTER TABLE installments ADD COLUMN discount_deadline_type ENUM('DUE_DATE', 'DAYS_BEFORE', 'CUSTOM') DEFAULT 'DUE_DATE' COMMENT 'Tipo de prazo' AFTER discount_type",
+                "ALTER TABLE installments ADD COLUMN discount_description TEXT NULL COMMENT 'Descrição do desconto' AFTER discount_deadline_type",
+                "ALTER TABLE installments ADD INDEX idx_has_discount (has_discount)"
+            ];
+            
+            foreach ($alterQueries as $query) {
+                try {
+                    $this->pdo->exec($query);
+                    error_log("Executado: " . $query);
+                } catch (PDOException $e) {
+                    if (strpos($e->getMessage(), 'Duplicate column name') === false) {
+                        error_log("Erro ao executar: " . $query . " - " . $e->getMessage());
+                    }
+                }
+            }
+            
+            error_log("Campos de desconto adicionados à tabela installments");
+            return true;
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao adicionar campos de desconto: " . $e->getMessage());
+            return false;
+        }
+    }
+
     /**
      * Obter estatísticas de mensalidades (com filtro de polo)
      */
@@ -681,6 +927,72 @@ class DatabaseManager {
             ];
         }
     }
+
+        /**
+     * ===== RELATÓRIO DE DESEMPENHO DO DESCONTO =====
+     */
+    public function getDiscountPerformanceReport($startDate, $endDate, $poloId = null) {
+        try {
+            $query = "
+                SELECT 
+                    -- Dados básicos da mensalidade
+                    i.installment_id,
+                    c.name as customer_name,
+                    i.description,
+                    i.installment_count,
+                    i.installment_value,
+                    i.discount_value,
+                    
+                    -- Estatísticas de uso do desconto
+                    COUNT(ip.id) as total_installments,
+                    COUNT(CASE WHEN ip.discount_applied > 0 THEN 1 END) as installments_with_discount_used,
+                    SUM(ip.discount_applied) as total_discount_used,
+                    
+                    -- Economia do cliente
+                    (i.discount_value * i.installment_count) as potential_savings,
+                    SUM(ip.discount_applied) as actual_savings,
+                    
+                    -- Taxa de utilização do desconto
+                    CASE 
+                        WHEN COUNT(ip.id) > 0 THEN 
+                            ROUND((COUNT(CASE WHEN ip.discount_applied > 0 THEN 1 END) / COUNT(ip.id)) * 100, 2)
+                        ELSE 0 
+                    END as discount_usage_rate,
+                    
+                    -- Pagamentos no prazo (que ganharam desconto)
+                    COUNT(CASE WHEN ip.status = 'RECEIVED' AND ip.paid_date <= ip.due_date AND ip.discount_applied > 0 THEN 1 END) as on_time_with_discount,
+                    
+                    -- Receita com desconto vs sem desconto
+                    SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.final_value ELSE 0 END) as revenue_with_discount,
+                    SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.original_value ELSE 0 END) as revenue_without_discount
+                    
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                LEFT JOIN installment_payments ip ON i.installment_id = ip.installment_id
+                WHERE i.has_discount = 1 
+                AND i.created_at BETWEEN ? AND ?
+            ";
+            
+            $params = [$startDate, $endDate];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $query .= " GROUP BY i.id ORDER BY discount_usage_rate DESC";
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetchAll();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao gerar relatório de performance do desconto: " . $e->getMessage());
+            return [];
+        }
+    }
+
     
     /**
      * Buscar relatório de splits com filtro por polo - MÉTODO MANTIDO
@@ -721,6 +1033,66 @@ class DatabaseManager {
         $stmt->execute($params);
         
         return $stmt->fetchAll();
+    }
+
+        /**
+     * ===== FUNÇÃO ATUALIZADA: OBTER RELATÓRIO COM DESCONTO =====
+     */
+    public function getInstallmentReportWithDiscount($startDate, $endDate, $poloId = null) {
+        try {
+            $query = "
+                SELECT i.*, c.name as customer_name, c.email as customer_email,
+                       u.nome as created_by_name,
+                       
+                       -- Estatísticas de pagamento
+                       COUNT(ip.id) as payments_made,
+                       SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END) as amount_received,
+                       
+                       -- ===== ESTATÍSTICAS DE DESCONTO =====
+                       CASE 
+                           WHEN i.has_discount = 1 THEN 
+                               (i.discount_value * i.installment_count)
+                           ELSE 0 
+                       END as total_discount_potential,
+                       
+                       CASE 
+                           WHEN i.has_discount = 1 THEN 
+                               COUNT(CASE WHEN ip.status = 'RECEIVED' AND ip.discount_applied > 0 THEN 1 END)
+                           ELSE 0 
+                       END as payments_with_discount_applied,
+                       
+                       -- Percentual de conclusão
+                       CASE 
+                           WHEN i.total_value > 0 THEN 
+                               ROUND((SUM(CASE WHEN ip.status = 'RECEIVED' THEN ip.value ELSE 0 END) / i.total_value) * 100, 2)
+                           ELSE 0 
+                       END as completion_percentage
+                       
+                FROM installments i
+                LEFT JOIN customers c ON i.customer_id = c.id
+                LEFT JOIN usuarios u ON i.created_by = u.id
+                LEFT JOIN installment_payments ip ON i.installment_id = ip.installment_id
+                WHERE i.created_at BETWEEN ? AND ?
+            ";
+            
+            $params = [$startDate, $endDate];
+            
+            if ($poloId !== null) {
+                $query .= " AND i.polo_id = ?";
+                $params[] = $poloId;
+            }
+            
+            $query .= " GROUP BY i.id ORDER BY i.created_at DESC";
+            
+            $stmt = $this->pdo->prepare($query);
+            $stmt->execute($params);
+            
+            return $stmt->fetchAll();
+            
+        } catch (PDOException $e) {
+            error_log("Erro ao buscar relatório com desconto: " . $e->getMessage());
+            return [];
+        }
     }
     
     /**
@@ -845,6 +1217,44 @@ class DatabaseManager {
             return false;
         }
     }
+
+        /**
+     * ===== FUNÇÃO DE MIGRAÇÃO AUTOMÁTICA =====
+     */
+    public function ensureDatabaseStructureWithDiscount() {
+        try {
+            error_log("Verificando estrutura do banco com suporte a desconto...");
+            
+            // Verificar se tabela installments existe
+            $result = $this->pdo->query("SHOW TABLES LIKE 'installments'");
+            if ($result->rowCount() == 0) {
+                // Criar tabela nova com desconto
+                $this->createInstallmentsTableWithDiscount();
+            } else {
+                // Adicionar campos de desconto à tabela existente
+                $this->addDiscountFieldsToExistingTable();
+            }
+            
+            // Verificar/criar tabela de parcelas
+            $this->createInstallmentPaymentsTable();
+            
+            // Criar outras tabelas se necessário
+            $this->createCustomersTable();
+            $this->createPaymentsTable();
+            $this->createWalletIdsTable();
+            $this->createPaymentSplitsTable();
+            $this->createWebhookLogsTable();
+            
+            error_log("Estrutura do banco com desconto verificada/criada");
+            return true;
+            
+        } catch (Exception $e) {
+            error_log("Erro ao verificar estrutura com desconto: " . $e->getMessage());
+            return false;
+        }
+    }
+
+
     
     private function mapAccountStatus($asaasStatus) {
         $statusMap = [
@@ -1099,7 +1509,98 @@ class DatabaseManager {
             return false;
         }
     }
+
+    /**
+ * ===== FUNÇÃO PARA ATUALIZAÇÃO VIA CLI =====
+ */
+    function updateSystemForDiscount() {
+    try {
+        echo "🏷️ Atualizando sistema para suporte a DESCONTO em mensalidades...\n";
+        
+        $db = DatabaseManager::getInstance();
+        
+        if ($db->ensureDatabaseStructureWithDiscount()) {
+            echo "✅ Estrutura do banco atualizada para desconto\n";
+            echo "🎯 Novas funcionalidades:\n";
+            echo "   • Desconto fixo por parcela\n";
+            echo "   • Desconto válido até vencimento\n";
+            echo "   • Rastreamento de uso do desconto\n";
+            echo "   • Relatórios de performance do desconto\n";
+            echo "   • Máximo de " . MAX_DISCOUNT_PERCENTAGE . "% por parcela\n";
+            return true;
+        } else {
+            echo "❌ Erro ao atualizar estrutura do banco\n";
+            return false;
+        }
+        
+    } catch (Exception $e) {
+        echo "❌ Erro na atualização: " . $e->getMessage() . "\n";
+        return false;
+    }
 }
+}
+
+// Executar comandos via linha de comando
+if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($_SERVER['SCRIPT_NAME'])) {
+    
+    $command = isset($argv[1]) ? $argv[1] : '';
+    
+    switch ($command) {
+        case 'add-discount':
+            updateSystemForDiscount();
+            break;
+            
+        case 'test-discount':
+            try {
+                $db = DatabaseManager::getInstance();
+                $stats = $db->getInstallmentStatsWithDiscount();
+                
+                echo "📊 Estatísticas de Desconto:\n";
+                echo "================================\n";
+                echo "Mensalidades com desconto: " . $stats['installments_with_discount'] . "\n";
+                echo "Potencial de desconto: R$ " . number_format($stats['total_discount_potential'], 2, ',', '.') . "\n";
+                echo "Taxa de adoção: " . $stats['discount_adoption_rate'] . "%\n";
+                echo "Eficiência do desconto: " . $stats['discount_efficiency'] . "%\n";
+                
+            } catch (Exception $e) {
+                echo "❌ Erro: " . $e->getMessage() . "\n";
+            }
+            break;
+            
+        default:
+            echo "Sistema de Mensalidades com DESCONTO v3.4\n";
+            echo "==========================================\n\n";
+            echo "Comandos disponíveis:\n";
+            echo "  add-discount    - Atualizar banco para suporte a desconto\n";
+            echo "  test-discount   - Testar funcionalidades de desconto\n\n";
+            echo "💰 Novo: Desconto automático até vencimento!\n";
+            echo "🏷️ Funcionalidades:\n";
+            echo "  • Desconto fixo por parcela\n";
+            echo "  • Aplicação automática até vencimento\n";
+            echo "  • Máximo " . MAX_DISCOUNT_PERCENTAGE . "% por parcela\n";
+            echo "  • Relatórios de performance\n";
+            break;
+    }
+}
+
+// Executar migração automática quando arquivo for incluído
+if (!defined('SKIP_AUTO_UPDATE')) {
+    try {
+        $db = DatabaseManager::getInstance();
+        
+        // Verificar se campos de desconto existem
+        $result = $db->getConnection()->query("SHOW COLUMNS FROM installments LIKE 'has_discount'");
+        if ($result->rowCount() == 0) {
+            error_log("Campos de desconto não existem, adicionando automaticamente...");
+            $db->addDiscountFieldsToExistingTable();
+            error_log("Sistema atualizado para suporte a desconto automaticamente");
+        }
+        
+    } catch (Exception $e) {
+        error_log("Erro na migração automática para desconto: " . $e->getMessage());
+    }
+}
+
 
 /**
  * Classe AsaasConfig adaptada para multi-tenant - MANTIDA
@@ -1956,7 +2457,7 @@ class InstallmentFormatter {
     }
 }
 
-// Log de inicialização do sistema de mensalidades
-error_log("Sistema de mensalidades carregado - v3.3");
-error_log("Constantes: MAX_INSTALLMENTS=" . MAX_INSTALLMENTS . ", MIN_INSTALLMENTS=" . MIN_INSTALLMENTS);
+// Log de inicialização
+error_log("Sistema de mensalidades COM DESCONTO carregado - v3.4");
+error_log("Configurações: MAX_DISCOUNT=" . MAX_DISCOUNT_PERCENTAGE . "%, TIPO=" . DEFAULT_DISCOUNT_TYPE);
 ?>

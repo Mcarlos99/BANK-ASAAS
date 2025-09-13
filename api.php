@@ -1,8 +1,8 @@
 <?php
 /**
- * API Endpoint Multi-Tenant para funcionalidades AJAX - COM PARCELAMENTO
+ * API Endpoint ATUALIZADA COM DESCONTO - funcionalidades AJAX
  * Arquivo: api.php
- * Versão com suporte a múltiplos polos E mensalidades parceladas
+ * Versão com suporte a mensalidades COM DESCONTO
  */
 
 require_once 'bootstrap.php';
@@ -44,7 +44,8 @@ function jsonResponse($success, $data = null, $error = null) {
         'user_context' => [
             'tipo' => $_SESSION['usuario_tipo'] ?? 'unknown',
             'polo_id' => $_SESSION['polo_id'] ?? null
-        ]
+        ],
+        'discount_support' => true // NOVO: Indicar suporte a desconto
     ]);
     exit();
 }
@@ -54,10 +55,282 @@ $action = $_GET['action'] ?? $_POST['action'] ?? '';
 
 try {
     switch ($action) {
+
+                case 'create-installment-with-discount':
+                    try {
+                        // Usar configuração dinâmica baseada no polo do usuário
+                        $dynamicAsaas = new DynamicAsaasConfig();
+                        $asaas = $dynamicAsaas->getInstance();
+                        
+                        // Dados do pagamento base
+                        $paymentData = $_POST['payment'] ?? [];
+                        
+                        // Dados do parcelamento
+                        $installmentData = $_POST['installment'] ?? [];
+                        
+                        // ===== DADOS DO DESCONTO (NOVO) =====
+                        $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
+                        
+                        if ($discountEnabled) {
+                            $discountValue = floatval($_POST['discount_value'] ?? 0);
+                            
+                            // Validações do desconto
+                            if ($discountValue <= 0) {
+                                jsonResponse(false, null, 'Valor do desconto deve ser maior que zero');
+                            }
+                            
+                            $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+                            if ($discountValue >= $installmentValue) {
+                                jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
+                            }
+                            
+                            // Validar máximo de 50%
+                            $maxDiscount = $installmentValue * (MAX_DISCOUNT_PERCENTAGE / 100);
+                            if ($discountValue > $maxDiscount) {
+                                jsonResponse(false, null, "Desconto máximo: R$ " . number_format($maxDiscount, 2, ',', '.') . " (" . MAX_DISCOUNT_PERCENTAGE . "% da parcela)");
+                            }
+                            
+                            // Adicionar desconto aos dados do parcelamento
+                            $installmentData['discount_value'] = $discountValue;
+                            $installmentData['discount_type'] = $_POST['discount_type'] ?? 'FIXED';
+                            $installmentData['discount_deadline_type'] = $_POST['discount_deadline_type'] ?? 'DUE_DATE';
+                        }
+                        
+                        // Validações básicas mantidas...
+                        if (empty($paymentData['customer'])) {
+                            jsonResponse(false, null, 'Cliente é obrigatório');
+                        }
+                        
+                        if (empty($installmentData['installmentCount']) || $installmentData['installmentCount'] < 2) {
+                            jsonResponse(false, null, 'Número de parcelas deve ser maior que 1');
+                        }
+                        
+                        if (empty($installmentData['installmentValue']) || $installmentData['installmentValue'] <= 0) {
+                            jsonResponse(false, null, 'Valor da parcela deve ser maior que zero');
+                        }
+                        
+                        // Validar número máximo de parcelas
+                        if ($installmentData['installmentCount'] > MAX_INSTALLMENTS) {
+                            jsonResponse(false, null, 'Número máximo de parcelas é ' . MAX_INSTALLMENTS);
+                        }
+                        
+                        // Validar data de vencimento
+                        if (empty($paymentData['dueDate'])) {
+                            jsonResponse(false, null, 'Data de vencimento é obrigatória');
+                        }
+                        
+                        if (strtotime($paymentData['dueDate']) < strtotime('today')) {
+                            jsonResponse(false, null, 'Data de vencimento não pode ser anterior a hoje');
+                        }
+                        
+                        // Preparar dados dos splits
+                        $splits = [];
+                        if (isset($_POST['splits'])) {
+                            foreach ($_POST['splits'] as $split) {
+                                if (!empty($split['walletId'])) {
+                                    $splitData = ['walletId' => $split['walletId']];
+                                    
+                                    if (!empty($split['percentualValue'])) {
+                                        $splitData['percentualValue'] = floatval($split['percentualValue']);
+                                    }
+                                    if (!empty($split['fixedValue'])) {
+                                        $splitData['fixedValue'] = floatval($split['fixedValue']);
+                                    }
+                                    
+                                    $splits[] = $splitData;
+                                }
+                            }
+                        }
+                        
+                        // ===== USAR INSTALLMENT MANAGER COM DESCONTO =====
+                        $installmentManager = new InstallmentManager();
+                        $result = $installmentManager->createInstallment($paymentData, $splits, $installmentData);
+                        
+                        // Preparar resposta com informações de desconto
+                        $responseMessage = "✅ Mensalidade criada com sucesso! " . 
+                            $installmentData['installmentCount'] . " parcelas de R$ " . 
+                            number_format($installmentData['installmentValue'], 2, ',', '.');
+                        
+                        if ($discountEnabled && isset($installmentData['discount_value'])) {
+                            $totalDiscount = $installmentData['discount_value'] * $installmentData['installmentCount'];
+                            $responseMessage .= "<br>🏷️ <strong>Desconto:</strong> R$ " . 
+                                number_format($installmentData['discount_value'], 2, ',', '.') . 
+                                " por parcela (economia total: R$ " . 
+                                number_format($totalDiscount, 2, ',', '.') . ")";
+                            $responseMessage .= "<br><small class='text-success'>Válido até o vencimento de cada parcela</small>";
+                        }
+                        
+                        if (!empty($result['data']['payment']['invoiceUrl'])) {
+                            $responseMessage .= '<br><a href="' . $result['data']['payment']['invoiceUrl'] . '" target="_blank" class="btn btn-sm btn-outline-primary mt-2"><i class="bi bi-eye"></i> Ver 1ª Parcela</a>';
+                        }
+                        
+                        jsonResponse(true, $result, $responseMessage);
+                        
+                    } catch (Exception $e) {
+                        jsonResponse(false, null, $e->getMessage());
+                    }
+                    break;
+                
+                case 'discount-performance-report':
+                    try {
+                        $startDate = $_GET['start'] ?? date('Y-m-01');
+                        $endDate = $_GET['end'] ?? date('Y-m-d');
+                        
+                        $db = DatabaseManager::getInstance();
+                        $poloId = $auth->isMaster() ? ($_GET['polo_id'] ?? null) : $usuario['polo_id'];
+                        
+                        $report = $db->getDiscountPerformanceReport($startDate, $endDate, $poloId);
+                        $stats = $db->getInstallmentStatsWithDiscount($poloId);
+                        
+                        $response = [
+                            'period' => ['start' => $startDate, 'end' => $endDate],
+                            'context' => $poloId ? $usuario['polo_nome'] : 'Todos os polos',
+                            'summary' => [
+                                'total_with_discount' => $stats['installments_with_discount'],
+                                'discount_adoption_rate' => $stats['discount_adoption_rate'],
+                                'total_potential_savings' => $stats['total_discount_potential'],
+                                'avg_discount_value' => $stats['avg_discount_value'],
+                                'discount_efficiency' => $stats['discount_efficiency']
+                            ],
+                            'details' => $report
+                        ];
+                        
+                        jsonResponse(true, $response, "Relatório de performance do desconto gerado");
+                        
+                    } catch (Exception $e) {
+                        jsonResponse(false, null, "Erro ao gerar relatório de desconto: " . $e->getMessage());
+                    }
+                    break;
+                    
+                case 'discount-stats':
+                    try {
+                        $db = DatabaseManager::getInstance();
+                        $poloId = $auth->isMaster() ? ($_GET['polo_id'] ?? null) : $usuario['polo_id'];
+                        
+                        $stats = $db->getInstallmentStatsWithDiscount($poloId);
+                        
+                        // Calcular métricas adicionais
+                        $discountMetrics = [
+                            'adoption_rate' => $stats['discount_adoption_rate'],
+                            'efficiency_rate' => $stats['discount_efficiency'],
+                            'avg_discount_value' => $stats['avg_discount_value'],
+                            'total_potential_savings' => $stats['total_discount_potential'],
+                            'discounts_used' => $stats['discounts_used'],
+                            'installments_with_discount' => $stats['installments_with_discount']
+                        ];
+                        
+                        // Classificar performance
+                        $performance = 'baixa';
+                        if ($stats['discount_efficiency'] >= 70) {
+                            $performance = 'excelente';
+                        } elseif ($stats['discount_efficiency'] >= 50) {
+                            $performance = 'boa';
+                        } elseif ($stats['discount_efficiency'] >= 30) {
+                            $performance = 'regular';
+                        }
+                        
+                        $discountMetrics['performance_level'] = $performance;
+                        $discountMetrics['context'] = $poloId ? $usuario['polo_nome'] : 'Sistema completo';
+                        
+                        jsonResponse(true, $discountMetrics, "Estatísticas de desconto obtidas");
+                        
+                    } catch (Exception $e) {
+                        jsonResponse(false, null, "Erro ao obter estatísticas de desconto: " . $e->getMessage());
+                    }
+                    break;
+                    
+                case 'validate-discount':
+                    try {
+                        $discountValue = floatval($_POST['discount_value'] ?? 0);
+                        $installmentValue = floatval($_POST['installment_value'] ?? 0);
+                        
+                        $validation = [
+                            'valid' => true,
+                            'errors' => [],
+                            'warnings' => [],
+                            'suggestions' => []
+                        ];
+                        
+                        // Validações
+                        if ($discountValue <= 0) {
+                            $validation['valid'] = false;
+                            $validation['errors'][] = 'Valor do desconto deve ser maior que zero';
+                        }
+                        
+                        if ($discountValue >= $installmentValue) {
+                            $validation['valid'] = false;
+                            $validation['errors'][] = 'Desconto não pode ser maior ou igual ao valor da parcela';
+                        }
+                        
+                        if ($installmentValue > 0) {
+                            $percentage = ($discountValue / $installmentValue) * 100;
+                            $maxDiscount = $installmentValue * (MAX_DISCOUNT_PERCENTAGE / 100);
+                            
+                            if ($discountValue > $maxDiscount) {
+                                $validation['valid'] = false;
+                                $validation['errors'][] = "Desconto máximo: R$ " . number_format($maxDiscount, 2, ',', '.') . " (" . MAX_DISCOUNT_PERCENTAGE . "% da parcela)";
+                            }
+                            
+                            // Warnings e sugestões
+                            if ($percentage > 30) {
+                                $validation['warnings'][] = "Desconto alto ({$percentage}% da parcela). Pode impactar a receita.";
+                            }
+                            
+                            if ($percentage < 5) {
+                                $validation['suggestions'][] = "Desconto baixo pode ter pouco impacto na conversão.";
+                            }
+                            
+                            $validation['discount_percentage'] = round($percentage, 1);
+                            $validation['max_discount_allowed'] = $maxDiscount;
+                        }
+                        
+                        jsonResponse(true, $validation, $validation['valid'] ? "Desconto válido" : "Desconto inválido");
+                        
+                    } catch (Exception $e) {
+                        jsonResponse(false, null, "Erro ao validar desconto: " . $e->getMessage());
+                    }
+                    break;
+                    
+                case 'calculate-savings':
+                    try {
+                        $installmentValue = floatval($_GET['installment_value'] ?? 0);
+                        $installmentCount = intval($_GET['installment_count'] ?? 0);
+                        $discountValue = floatval($_GET['discount_value'] ?? 0);
+                        
+                        if ($installmentValue <= 0 || $installmentCount <= 0) {
+                            jsonResponse(false, null, 'Valores inválidos para cálculo');
+                        }
+                        
+                        $originalTotal = $installmentValue * $installmentCount;
+                        $totalDiscount = $discountValue * $installmentCount;
+                        $finalTotal = $originalTotal - $totalDiscount;
+                        $savingsPercentage = $originalTotal > 0 ? ($totalDiscount / $originalTotal) * 100 : 0;
+                        
+                        $calculations = [
+                            'original_total' => $originalTotal,
+                            'discount_per_installment' => $discountValue,
+                            'total_discount' => $totalDiscount,
+                            'final_total' => $finalTotal,
+                            'savings_percentage' => round($savingsPercentage, 2),
+                            'installment_count' => $installmentCount,
+                            'formatted' => [
+                                'original_total' => 'R$ ' . number_format($originalTotal, 2, ',', '.'),
+                                'discount_per_installment' => 'R$ ' . number_format($discountValue, 2, ',', '.'),
+                                'total_discount' => 'R$ ' . number_format($totalDiscount, 2, ',', '.'),
+                                'final_total' => 'R$ ' . number_format($finalTotal, 2, ',', '.'),
+                                'savings_percentage' => number_format($savingsPercentage, 1) . '%'
+                            ]
+                        ];
+                        
+                        jsonResponse(true, $calculations, "Economia calculada com sucesso");
+                        
+                    } catch (Exception $e) {
+                        jsonResponse(false, null, "Erro ao calcular economia: " . $e->getMessage());
+                    }
+                    break;
         
-        // ===== CONFIGURAÇÕES DE POLO (MANTIDAS) =====
         
-        case 'get-polo-config':
+                case 'get-polo-config':
             $auth->requirePermission('configurar_polo');
             
             $poloId = (int)($_GET['polo_id'] ?? $_SESSION['polo_id']);
@@ -82,7 +355,7 @@ try {
             jsonResponse(true, $config, "Configuração do polo obtida");
             break;
             
-        case 'update-polo-config':
+                case 'update-polo-config':
             $auth->requirePermission('configurar_polo');
             
             $poloId = (int)$_POST['polo_id'];
@@ -98,7 +371,7 @@ try {
             jsonResponse(true, null, "Configurações atualizadas com sucesso");
             break;
             
-        case 'test-polo-config':
+                case 'test-polo-config':
             $auth->requirePermission('configurar_polo');
             
             $poloId = (int)$_POST['polo_id'];
@@ -113,9 +386,8 @@ try {
             }
             break;
             
-        // ===== WALLET IDs COM FILTRO POR POLO (MANTIDAS) =====
         
-        case 'create-wallet':
+                case 'create-wallet':
             try {
                 $name = $_POST['name'] ?? '';
                 $walletId = $_POST['wallet_id'] ?? '';
@@ -126,8 +398,8 @@ try {
                 }
                 
                 // Validar formato do Wallet ID
-                if (!ValidationHelper::isValidWalletId($walletId)) {
-                    jsonResponse(false, null, "Formato de Wallet ID inválido. Use formato UUID (ex: 22e49670-27e4-4579-a4c1-205c8a40497c)");
+                if (!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $walletId)) {
+                    jsonResponse(false, null, "Formato de Wallet ID inválido. Use formato UUID");
                 }
                 
                 $walletManager = new WalletManager();
@@ -140,7 +412,7 @@ try {
             }
             break;
             
-        case 'list-wallets':
+                case 'list-wallets':
             try {
                 $page = (int)($_GET['page'] ?? 1);
                 $limit = (int)($_GET['limit'] ?? 20);
@@ -156,7 +428,7 @@ try {
             }
             break;
             
-        case 'get-wallet':
+                case 'get-wallet':
             try {
                 $walletId = $_GET['wallet_id'] ?? '';
                 
@@ -178,9 +450,8 @@ try {
             }
             break;
             
-        // ===== FUNCIONALIDADES EXISTENTES ADAPTADAS =====
         
-        case 'create-customer':
+                case 'create-customer':
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -199,7 +470,7 @@ try {
             }
             break;
             
-        case 'create-account':
+                case 'create-account':
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -227,9 +498,9 @@ try {
             }
             break;
             
-        // ===== NOVA FUNCIONALIDADE: CRIAR PAGAMENTO PARCELADO =====
         
-        case 'create-installment-payment':
+                case 'create-installment-payment':
+                // Método original mantido para compatibilidade
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -300,7 +571,7 @@ try {
                     $db->savePaymentSplits($payment['id'], $splits);
                 }
                 
-                // Salvar dados específicos do parcelamento na nova tabela
+                // Salvar dados específicos do parcelamento
                 $installmentRecord = [
                     'installment_id' => $payment['installment'],
                     'polo_id' => $usuario['polo_id'],
@@ -314,7 +585,8 @@ try {
                     'has_splits' => !empty($splits),
                     'splits_count' => count($splits),
                     'created_by' => $usuario['id'],
-                    'first_payment_id' => $payment['id']
+                    'first_payment_id' => $payment['id'],
+                    'has_discount' => 0 // SEM desconto neste método
                 ];
                 
                 $db->saveInstallmentRecord($installmentRecord);
@@ -340,9 +612,8 @@ try {
             }
             break;
             
-        // ===== NOVA: BUSCAR PARCELAS DE UM PARCELAMENTO =====
         
-        case 'get-installment-payments':
+                case 'get-installment-payments':
             try {
                 $installmentId = $_GET['installment_id'] ?? '';
                 
@@ -350,31 +621,41 @@ try {
                     jsonResponse(false, null, 'ID do parcelamento é obrigatório');
                 }
                 
-                // Usar configuração dinâmica
                 $dynamicAsaas = new DynamicAsaasConfig();
                 $asaas = $dynamicAsaas->getInstance();
                 
-                // Buscar todas as parcelas
                 $payments = $asaas->getInstallmentPayments($installmentId);
                 
-                // Adicionar informações extras
+                // Buscar informações de desconto do banco local
                 $db = DatabaseManager::getInstance();
                 $installmentInfo = $db->getInstallmentInfo($installmentId);
+                
+                // Adicionar informações de desconto
+                $discountInfo = null;
+                if (!empty($installmentInfo['has_discount'])) {
+                    $discountInfo = [
+                        'has_discount' => true,
+                        'discount_value' => $installmentInfo['discount_value'],
+                        'discount_type' => $installmentInfo['discount_type'],
+                        'discount_description' => $installmentInfo['discount_description'],
+                        'total_potential_discount' => $installmentInfo['discount_value'] * $installmentInfo['installment_count']
+                    ];
+                }
                 
                 jsonResponse(true, [
                     'payments' => $payments,
                     'installment_info' => $installmentInfo,
+                    'discount_info' => $discountInfo,
                     'total_payments' => count($payments['data'] ?? [])
-                ], "Parcelas carregadas com sucesso");
+                ], "Parcelas carregadas com informações de desconto");
                 
             } catch (Exception $e) {
                 jsonResponse(false, null, "Erro ao buscar parcelas: " . $e->getMessage());
             }
             break;
             
-        // ===== NOVA: GERAR CARNÊ EM PDF =====
         
-        case 'generate-payment-book':
+                case 'generate-payment-book':
             try {
                 $installmentId = $_POST['installment_id'] ?? '';
                 
@@ -382,19 +663,15 @@ try {
                     jsonResponse(false, null, 'ID do parcelamento é obrigatório');
                 }
                 
-                // Usar configuração dinâmica
                 $dynamicAsaas = new DynamicAsaasConfig();
                 $asaas = $dynamicAsaas->getInstance();
                 
-                // Gerar carnê
                 $paymentBook = $asaas->generateInstallmentPaymentBook($installmentId);
                 
                 if ($paymentBook['success']) {
-                    // Salvar PDF temporariamente ou retornar URL
                     $fileName = 'carne_' . $installmentId . '_' . date('YmdHis') . '.pdf';
                     $filePath = __DIR__ . '/temp/' . $fileName;
                     
-                    // Criar diretório temp se não existir
                     if (!is_dir(__DIR__ . '/temp')) {
                         mkdir(__DIR__ . '/temp', 0755, true);
                     }
@@ -416,9 +693,8 @@ try {
             }
             break;
             
-        // ===== NOVA: CALCULAR DATAS DE VENCIMENTO =====
         
-        case 'calculate-due-dates':
+                case 'calculate-due-dates':
             try {
                 $firstDueDate = $_GET['first_due_date'] ?? '';
                 $installmentCount = (int)($_GET['installment_count'] ?? 0);
@@ -451,9 +727,8 @@ try {
             }
             break;
             
-        // ===== FUNCIONALIDADE ORIGINAL MANTIDA PARA COMPATIBILIDADE =====
         
-        case 'create-payment':
+                case 'create-payment':
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -494,9 +769,8 @@ try {
             }
             break;
             
-        // ===== RELATÓRIOS ATUALIZADOS COM SUPORTE A PARCELAMENTOS =====
         
-        case 'installment-report':
+                case 'installment-report':
             try {
                 $startDate = $_GET['start'] ?? date('Y-m-01');
                 $endDate = $_GET['end'] ?? date('Y-m-d');
@@ -561,9 +835,8 @@ try {
             }
             break;
             
-        // ===== OUTRAS FUNCIONALIDADES EXISTENTES MANTIDAS =====
         
-        case 'test-api':
+                case 'test-api':
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -585,7 +858,7 @@ try {
             }
             break;
             
-        case 'sync-accounts':
+                case 'sync-accounts':
             try {
                 // Usar configuração dinâmica baseada no polo do usuário
                 $dynamicAsaas = new DynamicAsaasConfig();
@@ -600,9 +873,8 @@ try {
             }
             break;
             
-        // ===== RELATÓRIOS COM FILTRO POR POLO (MANTIDOS) =====
         
-        case 'report':
+                case 'report':
             try {
                 $startDate = $_GET['start'] ?? date('Y-m-01');
                 $endDate = $_GET['end'] ?? date('Y-m-d');
@@ -669,10 +941,9 @@ try {
             }
             break;
             
-        // ===== CONTINUE COM OUTRAS FUNCIONALIDADES EXISTENTES... =====
-        // (Mantidas todas as outras funcionalidades como no arquivo original)
+
         
-        case 'wallet-performance-report':
+                case 'wallet-performance-report':
             try {
                 $startDate = $_GET['start'] ?? date('Y-m-01');
                 $endDate = $_GET['end'] ?? date('Y-m-d');
@@ -696,11 +967,9 @@ try {
             }
             break;
             
-        // ===== ESTATÍSTICAS COM FILTRO POR POLO =====
         
-        case 'stats':
+                case 'stats':
             try {
-                // Usar estatísticas filtradas por polo
                 $poloId = null;
                 if (!$auth->isMaster()) {
                     $poloId = $_SESSION['polo_id'];
@@ -710,10 +979,22 @@ try {
                 
                 $stats = SystemStats::getGeneralStats($poloId);
                 
+                // ADICIONAR ESTATÍSTICAS DE DESCONTO
+                $db = DatabaseManager::getInstance();
+                $discountStats = $db->getInstallmentStatsWithDiscount($poloId);
+                
+                $stats['discount_statistics'] = [
+                    'installments_with_discount' => $discountStats['installments_with_discount'],
+                    'total_discount_potential' => $discountStats['total_discount_potential'],
+                    'discount_adoption_rate' => $discountStats['discount_adoption_rate'],
+                    'discount_efficiency' => $discountStats['discount_efficiency'],
+                    'avg_discount_value' => $discountStats['avg_discount_value']
+                ];
+                
                 if ($stats) {
                     $stats['context'] = $poloId ? ($_SESSION['polo_nome'] ?? 'Polo ID: ' . $poloId) : 'Global';
-                    $stats['installment_support'] = true; // Nova funcionalidade
-                    jsonResponse(true, $stats, "Estatísticas obtidas com sucesso");
+                    $stats['discount_support'] = true;
+                    jsonResponse(true, $stats, "Estatísticas com desconto obtidas");
                 } else {
                     jsonResponse(false, null, "Erro ao obter estatísticas");
                 }
@@ -723,7 +1004,7 @@ try {
             }
             break;
             
-        case 'dashboard-data':
+                case 'dashboard-data':
             try {
                 // Usar estatísticas filtradas
                 $poloId = !$auth->isMaster() ? $_SESSION['polo_id'] : null;
@@ -811,9 +1092,8 @@ try {
             }
             break;
             
-        // ===== FUNCIONALIDADES DE POLO (MASTER ONLY) =====
         
-        case 'list-polos':
+                case 'list-polos':
             $auth->requirePermission('gerenciar_polos');
             
             try {
@@ -827,7 +1107,7 @@ try {
             }
             break;
             
-        case 'create-polo':
+                case 'create-polo':
             $auth->requirePermission('gerenciar_polos');
             
             try {
@@ -851,7 +1131,7 @@ try {
             }
             break;
             
-        case 'get-polo-stats':
+                case 'get-polo-stats':
             try {
                 $poloId = (int)($_GET['polo_id'] ?? $_SESSION['polo_id']);
                 
@@ -887,9 +1167,9 @@ try {
             }
             break;
             
-        // ===== FUNCIONALIDADES DE USUÁRIOS (MASTER ONLY) =====
 
-        case 'list-users':
+
+                case 'list-users':
             $auth->requirePermission('gerenciar_usuarios');
             
             try {
@@ -1004,7 +1284,7 @@ try {
             }
             break;
 
-        case 'create-user':
+                case 'create-user':
             $auth->requirePermission('gerenciar_usuarios');
             
             try {
@@ -1116,9 +1396,10 @@ try {
             }
             break;
 
-        // ===== CONTINUE COM OUTRAS FUNCIONALIDADES... =====
+
         
-        case 'health-check':
+        
+                case 'health-check':
             $issues = [];
             
             // Verificar banco de dados
@@ -1126,8 +1407,8 @@ try {
                 $db = DatabaseManager::getInstance();
                 $db->getConnection()->query("SELECT 1");
                 
-                // Verificar tabelas do sistema multi-tenant
-                $tables = ['polos', 'usuarios', 'sessoes', 'auditoria', 'wallet_ids', 'installments']; // NOVA TABELA
+                // Verificar tabelas do sistema incluindo desconto
+                $tables = ['polos', 'usuarios', 'sessoes', 'auditoria', 'wallet_ids', 'installments'];
                 foreach ($tables as $table) {
                     $result = $db->getConnection()->query("SHOW TABLES LIKE '{$table}'");
                     if ($result->rowCount() == 0) {
@@ -1135,95 +1416,80 @@ try {
                     }
                 }
                 
-            } catch (Exception $e) {
-                $issues[] = "Banco de dados: " . $e->getMessage();
-            }
-            
-            // Verificar configuração do polo atual
-            try {
-                if (!$auth->isMaster() && $_SESSION['polo_id']) {
-                    $config = $configManager->getPoloConfig($_SESSION['polo_id']);
-                    
-                    $environment = $config['asaas_environment'];
-                    $apiKey = $environment === 'production' ? 
-                        $config['asaas_production_api_key'] : 
-                        $config['asaas_sandbox_api_key'];
-                        
-                    if (empty($apiKey)) {
-                        $issues[] = "API Key não configurada para ambiente {$environment} do polo";
-                    } else {
-                        // Testar conexão
-                        $testResult = $configManager->testAsaasConfig($_SESSION['polo_id']);
-                        if (!$testResult['success']) {
-                            $issues[] = "Falha na conexão com ASAAS: " . $testResult['message'];
-                        }
-                    }
+                // NOVO: Verificar campos de desconto
+                $result = $db->getConnection()->query("SHOW COLUMNS FROM installments LIKE 'has_discount'");
+                if ($result->rowCount() == 0) {
+                    $issues[] = "Campos de desconto não encontrados. Execute: php config.php add-discount";
                 }
                 
             } catch (Exception $e) {
-                $issues[] = "Configuração do polo: " . $e->getMessage();
-            }
-            
-            // Verificar espaço em disco
-            $freeBytes = disk_free_space(__DIR__);
-            $freeMB = round($freeBytes / 1024 / 1024);
-            if ($freeMB < 100) {
-                $issues[] = "Espaço em disco baixo: {$freeMB}MB";
+                $issues[] = "Banco de dados: " . $e->getMessage();
             }
             
             if (empty($issues)) {
                 jsonResponse(true, [
                     'polo_context' => $_SESSION['polo_nome'] ?? 'Master',
                     'user_type' => $_SESSION['usuario_tipo'],
-                    'installment_support' => true // NOVA FUNCIONALIDADE
-                ], "Sistema funcionando corretamente!");
+                    'installment_support' => true,
+                    'discount_support' => true,
+                    'max_discount_percentage' => MAX_DISCOUNT_PERCENTAGE
+                ], "Sistema funcionando corretamente com suporte a desconto!");
             } else {
                 jsonResponse(false, $issues, "Problemas encontrados no sistema");
             }
             break;
             
-        case 'system-info':
-            try {
-                $db = DatabaseManager::getInstance();
-                
-                // Estatísticas baseadas no contexto do usuário
-                $poloId = !$auth->isMaster() ? $_SESSION['polo_id'] : null;
-                $walletStats = $poloId ? 
-                    $configManager->getPoloStats($poloId) : 
-                    ['wallet_ids' => 0, 'usuarios_ativos' => 0];
-                
-                $info = [
-                    'php_version' => PHP_VERSION,
-                    'context' => $auth->isMaster() ? 'Master Admin' : $_SESSION['polo_nome'],
-                    'user_type' => $_SESSION['usuario_tipo'],
-                    'polo_id' => $_SESSION['polo_id'] ?? 'N/A',
-                    'log_retention' => LOG_RETENTION_DAYS . ' dias',
-                    'database' => DB_NAME,
-                    'timezone' => date_default_timezone_get(),
-                    'server_time' => date('Y-m-d H:i:s'),
-                    'disk_free' => round(disk_free_space(__DIR__) / 1024 / 1024) . 'MB',
-                    'memory_usage' => round(memory_get_usage() / 1024 / 1024, 2) . 'MB',
-                    'memory_limit' => ini_get('memory_limit'),
-                    'wallet_ids_total' => $walletStats['wallet_ids'] ?? 0,
-                    'usuarios_polo' => $walletStats['usuarios_ativos'] ?? 0,
-                    'system_version' => '2.1.0 Multi-Tenant + Parcelamento', // VERSÃO ATUALIZADA
-                    'installment_support' => true,
-                    'max_installments' => 24
-                ];
-                
-                jsonResponse(true, $info, "Informações do sistema obtidas");
-                
-            } catch (Exception $e) {
-                jsonResponse(false, null, "Erro ao obter informações: " . $e->getMessage());
-            }
-            break;
+                case 'system-info':
+                try {
+                    $db = DatabaseManager::getInstance();
+                    
+                    $poloId = !$auth->isMaster() ? $_SESSION['polo_id'] : null;
+                    $walletStats = $poloId ? 
+                        $configManager->getPoloStats($poloId) : 
+                        ['wallet_ids' => 0, 'usuarios_ativos' => 0];
+                    
+                    // OBTER ESTATÍSTICAS DE DESCONTO
+                    $discountStats = $db->getInstallmentStatsWithDiscount($poloId);
+                    
+                    $info = [
+                        'php_version' => PHP_VERSION,
+                        'context' => $auth->isMaster() ? 'Master Admin' : $_SESSION['polo_nome'],
+                        'user_type' => $_SESSION['usuario_tipo'],
+                        'polo_id' => $_SESSION['polo_id'] ?? 'N/A',
+                        'log_retention' => LOG_RETENTION_DAYS . ' dias',
+                        'database' => DB_NAME,
+                        'timezone' => date_default_timezone_get(),
+                        'server_time' => date('Y-m-d H:i:s'),
+                        'disk_free' => round(disk_free_space(__DIR__) / 1024 / 1024) . 'MB',
+                        'memory_usage' => round(memory_get_usage() / 1024 / 1024, 2) . 'MB',
+                        'memory_limit' => ini_get('memory_limit'),
+                        'wallet_ids_total' => $walletStats['wallet_ids'] ?? 0,
+                        'usuarios_polo' => $walletStats['usuarios_ativos'] ?? 0,
+                        'system_version' => '3.4 Multi-Tenant + Mensalidades + Desconto',
+                        'installment_support' => true,
+                        'discount_support' => true,
+                        'max_installments' => MAX_INSTALLMENTS,
+                        'max_discount_percentage' => MAX_DISCOUNT_PERCENTAGE,
+                        
+                        // ESTATÍSTICAS DE DESCONTO
+                        'discount_stats' => [
+                            'installments_with_discount' => $discountStats['installments_with_discount'],
+                            'discount_adoption_rate' => $discountStats['discount_adoption_rate'] . '%',
+                            'total_potential_savings' => 'R$ ' . number_format($discountStats['total_discount_potential'], 2, ',', '.'),
+                            'avg_discount_value' => 'R$ ' . number_format($discountStats['avg_discount_value'], 2, ',', '.')
+                        ]
+                    ];
+                    
+                    jsonResponse(true, $info, "Informações do sistema com desconto obtidas");
+                    
+                } catch (Exception $e) {
+                    jsonResponse(false, null, "Erro ao obter informações: " . $e->getMessage());
+                }
+                break;
+                case 'clean-logs':
+             $auth->requirePermission('manter_sistema');
             
-        // ===== FUNCIONALIDADES DE LIMPEZA E MANUTENÇÃO =====
-        
-        case 'clean-logs':
-            $auth->requirePermission('manter_sistema');
-            
-            try {
+                try {
                 $db = DatabaseManager::getInstance();
                 $deletedRows = $db->cleanOldLogs();
                 
@@ -1263,10 +1529,10 @@ try {
                     'temp_files' => $deletedTempFiles
                 ], "Limpeza concluída: {$deletedRows} registros, {$deletedFiles} logs e {$deletedTempFiles} carnês temporários removidos");
                 
-            } catch (Exception $e) {
+                } catch (Exception $e) {
                 jsonResponse(false, null, "Erro na limpeza: " . $e->getMessage());
-            }
-            break;
+                }
+                break;
             
         default:
             jsonResponse(false, null, "Ação não encontrada: {$action}");
@@ -1274,7 +1540,7 @@ try {
     }
     
 } catch (Exception $e) {
-    // Log do erro com contexto do usuário
+    // Log do erro detalhado
     error_log("API Error - User: " . ($_SESSION['usuario_email'] ?? 'unknown') . 
               ", Polo: " . ($_SESSION['polo_id'] ?? 'none') . 
               ", Action: {$action}, Error: " . $e->getMessage());
@@ -1282,6 +1548,6 @@ try {
     jsonResponse(false, null, "Erro interno: " . $e->getMessage());
 }
 
-// Se chegou até aqui, ação não foi encontrada
+// Se chegou até aqui, ação não foi especificada
 jsonResponse(false, null, "Nenhuma ação especificada");
 ?>

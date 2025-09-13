@@ -2208,9 +2208,7 @@ function getStatusIcon($status) {
             });
         }
         
-        /**
-         * Copiar informações da mensalidade
-         */
+
         function copyInstallmentInfo(installmentId) {
             const info = `ID da Mensalidade: ${installmentId}`;
             copyToClipboard(info);
@@ -2218,9 +2216,6 @@ function getStatusIcon($status) {
         
         // ===== FUNÇÕES BÁSICAS MANTIDAS =====
         
-        /**
-         * Copiar texto para área de transferência
-         */
         function copyToClipboard(text) {
             if (navigator.clipboard && window.isSecureContext) {
                 navigator.clipboard.writeText(text).then(() => {

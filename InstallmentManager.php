@@ -1,8 +1,8 @@
 <?php
 /**
- * Gerenciador Completo de Mensalidades/Parcelamentos - ASAAS
+ * Gerenciador Completo de Mensalidades/Parcelamentos - ASAAS COM DESCONTO
  * Arquivo: InstallmentManager.php
- * Versão: 3.3 - Sistema completo de mensalidades parceladas
+ * Versão: 3.4 - Sistema completo de mensalidades parceladas + DESCONTO
  * 
  * Autor: Sistema IMEP Split ASAAS
  * Data: 2025
@@ -11,7 +11,7 @@
 require_once 'bootstrap.php';
 
 /**
- * Classe principal para gerenciar mensalidades parceladas
+ * Classe principal para gerenciar mensalidades parceladas COM DESCONTO
  */
 class InstallmentManager {
     
@@ -30,7 +30,7 @@ class InstallmentManager {
             mkdir(__DIR__ . '/logs', 0755, true);
         }
         
-        $this->log("InstallmentManager inicializado");
+        $this->log("InstallmentManager inicializado com suporte a desconto");
     }
     
     /**
@@ -77,17 +77,14 @@ class InstallmentManager {
         
         return $this->asaas;
     }
-    
-    // ====================================================
-    // MÉTODOS PRINCIPAIS DE MENSALIDADE
-    // ====================================================
-    
+       
     /**
-     * Criar nova mensalidade parcelada completa
+     * ===== MÉTODO PRINCIPAL: CRIAR MENSALIDADE COM DESCONTO =====
+     * Criar nova mensalidade parcelada completa COM DESCONTO
      */
     public function createInstallment($paymentData, $splitsData = [], $installmentData = []) {
         try {
-            $this->log("Iniciando criação de mensalidade - Cliente: {$paymentData['customer']}, Parcelas: {$installmentData['installmentCount']}");
+            $this->log("Iniciando criação de mensalidade COM DESCONTO - Cliente: {$paymentData['customer']}, Parcelas: {$installmentData['installmentCount']}");
             
             // Validar dados de entrada
             $this->validateInstallmentData($installmentData);
@@ -97,20 +94,42 @@ class InstallmentManager {
                 $this->validateSplitsData($splitsData, $installmentData['installmentValue']);
             }
             
+            // ===== NOVA VALIDAÇÃO: DESCONTO =====
+            $discountData = [];
+            if (!empty($installmentData['discount_value']) && $installmentData['discount_value'] > 0) {
+                $discountData = $this->validateAndPrepareDiscount($installmentData);
+                $this->log("Desconto configurado: R$ {$discountData['value']} até o vencimento");
+            }
+            
             // Inicializar ASAAS
             $asaas = $this->initAsaas();
             
+            // Preparar dados para API ASAAS com desconto
+            $apiPaymentData = $paymentData;
+            
+            // ===== APLICAR DESCONTO NO PAGAMENTO =====
+            if (!empty($discountData)) {
+                // ASAAS aceita desconto com valor fixo e data limite
+                $apiPaymentData['discount'] = [
+                    'value' => $discountData['value'],
+                    'dueDateLimitDays' => 0, // Desconto válido até o dia do vencimento
+                    'type' => 'FIXED' // Valor fixo
+                ];
+                
+                $this->log("Desconto adicionado aos dados da API: R$ {$discountData['value']}");
+            }
+            
             // Criar parcelamento via API ASAAS
-            $this->log("Enviando para API ASAAS...");
-            $apiResult = $asaas->createInstallmentPaymentWithSplit($paymentData, $splitsData, $installmentData);
+            $this->log("Enviando para API ASAAS com desconto...");
+            $apiResult = $asaas->createInstallmentPaymentWithSplit($apiPaymentData, $splitsData, $installmentData);
             
             if (!$apiResult || empty($apiResult['installment'])) {
                 throw new Exception('Resposta inválida da API ASAAS');
             }
             
-            $this->log("Parcelamento criado na API ASAAS - ID: {$apiResult['installment']}");
+            $this->log("Parcelamento criado na API ASAAS com desconto - ID: {$apiResult['installment']}");
             
-            // Preparar dados para salvar no banco local
+            // Preparar dados para salvar no banco local COM DESCONTO
             $installmentRecord = [
                 'installment_id' => $apiResult['installment'],
                 'polo_id' => $this->auth->getUsuarioAtual()['polo_id'] ?? null,
@@ -125,12 +144,19 @@ class InstallmentManager {
                 'splits_count' => count($splitsData),
                 'created_by' => $this->auth->getUsuarioAtual()['id'] ?? null,
                 'first_payment_id' => $apiResult['id'],
-                'status' => 'ACTIVE'
+                'status' => 'ACTIVE',
+                
+                // ===== NOVOS CAMPOS DE DESCONTO =====
+                'has_discount' => !empty($discountData) ? 1 : 0,
+                'discount_value' => $discountData['value'] ?? null,
+                'discount_type' => $discountData['type'] ?? null,
+                'discount_deadline_type' => $discountData['deadline_type'] ?? null,
+                'discount_description' => $discountData['description'] ?? null
             ];
             
             // Salvar registro principal da mensalidade
             $recordId = $this->db->saveInstallmentRecord($installmentRecord);
-            $this->log("Registro de mensalidade salvo - ID local: {$recordId}");
+            $this->log("Registro de mensalidade salvo com desconto - ID local: {$recordId}");
             
             // Salvar primeiro pagamento no banco
             $paymentSaveData = array_merge($apiResult, [
@@ -147,7 +173,7 @@ class InstallmentManager {
             // Buscar e salvar todas as parcelas criadas
             $this->syncInstallmentPayments($apiResult['installment']);
             
-            // Preparar resposta completa
+            // Preparar resposta completa COM INFORMAÇÕES DE DESCONTO
             $response = [
                 'success' => true,
                 'installment_id' => $apiResult['installment'],
@@ -161,11 +187,19 @@ class InstallmentManager {
                     'total_value' => $installmentRecord['total_value'],
                     'first_due_date' => $paymentData['dueDate'],
                     'billing_type' => $paymentData['billingType'],
-                    'splits_configured' => count($splitsData)
+                    'splits_configured' => count($splitsData),
+                    
+                    // ===== INFORMAÇÕES DE DESCONTO =====
+                    'has_discount' => !empty($discountData),
+                    'discount_value' => $discountData['value'] ?? 0,
+                    'discount_per_installment' => $discountData['value'] ?? 0,
+                    'total_discount_potential' => (!empty($discountData) ? $discountData['value'] * $installmentData['installmentCount'] : 0),
+                    'discount_deadline' => 'Até o dia do vencimento de cada parcela'
                 ]
             ];
             
-            $this->log("Mensalidade criada com sucesso - Total: R$ " . number_format($installmentRecord['total_value'], 2, ',', '.'));
+            $this->log("Mensalidade criada com sucesso - Total: R$ " . number_format($installmentRecord['total_value'], 2, ',', '.') . 
+                      (!empty($discountData) ? " - Desconto: R$ " . number_format($discountData['value'], 2, ',', '.') . " por parcela" : ""));
             
             return $response;
             
@@ -174,7 +208,42 @@ class InstallmentManager {
             throw new Exception('Erro ao criar mensalidade: ' . $e->getMessage());
         }
     }
-    
+
+        /**
+     * ===== NOVA FUNÇÃO: VALIDAR E PREPARAR DESCONTO =====
+     * Validar e preparar dados do desconto
+     */
+    private function validateAndPrepareDiscount($installmentData) {
+        $discountValue = floatval($installmentData['discount_value'] ?? 0);
+        $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+        
+        // Validações do desconto
+        if ($discountValue <= 0) {
+            throw new Exception('Valor do desconto deve ser maior que zero');
+        }
+        
+        if ($discountValue >= $installmentValue) {
+            throw new Exception('Valor do desconto não pode ser maior ou igual ao valor da parcela');
+        }
+        
+        // Validar se desconto não é muito alto (máximo 50% da parcela)
+        $maxDiscount = $installmentValue * 0.50; // 50% do valor da parcela
+        if ($discountValue > $maxDiscount) {
+            throw new Exception("Desconto muito alto. Máximo permitido: R$ " . number_format($maxDiscount, 2, ',', '.') . " (50% da parcela)");
+        }
+        
+        // Preparar dados do desconto
+        $discountData = [
+            'value' => $discountValue,
+            'type' => 'FIXED', // Sempre valor fixo
+            'deadline_type' => 'DUE_DATE', // Válido até o vencimento
+            'description' => "Desconto de R$ " . number_format($discountValue, 2, ',', '.') . " válido até o vencimento"
+        ];
+        
+        $this->log("Desconto validado: R$ {$discountValue} (válido até vencimento)");
+        return $discountData;
+    }
+
     /**
      * Sincronizar todas as parcelas de um parcelamento com o banco local
      */
@@ -225,11 +294,11 @@ class InstallmentManager {
     }
     
     /**
-     * Obter informações completas de uma mensalidade
+     * Obter informações completas de uma mensalidade COM DESCONTO
      */
     public function getInstallmentDetails($installmentId) {
         try {
-            $this->log("Buscando detalhes da mensalidade: {$installmentId}");
+            $this->log("Buscando detalhes da mensalidade com desconto: {$installmentId}");
             
             // Buscar informações básicas no banco local
             $installmentInfo = $this->db->getInstallmentInfo($installmentId);
@@ -245,8 +314,8 @@ class InstallmentManager {
             // Buscar parcelas do banco local
             $localPayments = $this->getLocalInstallmentPayments($installmentId);
             
-            // Calcular estatísticas
-            $stats = $this->calculateInstallmentStats($installmentInfo, $paymentsResponse['data'] ?? []);
+            // Calcular estatísticas COM DESCONTO
+            $stats = $this->calculateInstallmentStatsWithDiscount($installmentInfo, $paymentsResponse['data'] ?? []);
             
             $details = [
                 'installment_info' => $installmentInfo,
@@ -262,11 +331,18 @@ class InstallmentManager {
                     'amount_pending' => $stats['amount_pending'],
                     'completion_percentage' => $stats['completion_percentage'],
                     'next_due_date' => $stats['next_due_date'],
-                    'status' => $installmentInfo['status']
+                    'status' => $installmentInfo['status'],
+                    
+                    // ===== INFORMAÇÕES DE DESCONTO =====
+                    'has_discount' => !empty($installmentInfo['has_discount']),
+                    'discount_value' => $installmentInfo['discount_value'] ?? 0,
+                    'discount_description' => $installmentInfo['discount_description'] ?? '',
+                    'total_discount_applied' => $stats['total_discount_applied'] ?? 0,
+                    'total_discount_potential' => $stats['total_discount_potential'] ?? 0
                 ]
             ];
             
-            $this->log("Detalhes da mensalidade obtidos - {$stats['payments_received']}/{$installmentInfo['installment_count']} parcelas pagas");
+            $this->log("Detalhes da mensalidade obtidos com desconto - {$stats['payments_received']}/{$installmentInfo['installment_count']} parcelas pagas");
             
             return $details;
             
@@ -275,6 +351,57 @@ class InstallmentManager {
             throw $e;
         }
     }
+        /**
+     * ===== NOVA FUNÇÃO: CALCULAR ESTATÍSTICAS COM DESCONTO =====
+     * Calcular estatísticas de uma mensalidade COM INFORMAÇÕES DE DESCONTO
+     */
+    private function calculateInstallmentStatsWithDiscount($installmentInfo, $apiPayments) {
+        $paymentsReceived = 0;
+        $totalReceived = 0;
+        $nextDueDate = null;
+        $totalDiscountApplied = 0;
+        
+        foreach ($apiPayments as $payment) {
+            if ($payment['status'] === 'RECEIVED') {
+                $paymentsReceived++;
+                $totalReceived += $payment['value'];
+                
+                // Verificar se houve desconto aplicado
+                if (isset($payment['discount']) && $payment['discount']['value'] > 0) {
+                    $totalDiscountApplied += $payment['discount']['value'];
+                }
+            } elseif (empty($nextDueDate) && $payment['status'] === 'PENDING') {
+                $nextDueDate = $payment['dueDate'];
+            }
+        }
+        
+        $totalExpected = $installmentInfo['total_value'];
+        $amountPending = $totalExpected - $totalReceived;
+        $completionPercentage = $totalExpected > 0 ? ($totalReceived / $totalExpected) * 100 : 0;
+        
+        // Calcular potencial total de desconto
+        $discountValue = floatval($installmentInfo['discount_value'] ?? 0);
+        $totalDiscountPotential = $discountValue * $installmentInfo['installment_count'];
+        
+        return [
+            'payments_received' => $paymentsReceived,
+            'total_payments' => count($apiPayments),
+            'total_received' => $totalReceived,
+            'amount_pending' => $amountPending,
+            'completion_percentage' => round($completionPercentage, 2),
+            'next_due_date' => $nextDueDate,
+            'is_completed' => $completionPercentage >= 100,
+            'is_overdue' => $this->hasOverduePayments($apiPayments),
+            
+            // ===== ESTATÍSTICAS DE DESCONTO =====
+            'total_discount_applied' => $totalDiscountApplied,
+            'total_discount_potential' => $totalDiscountPotential,
+            'discount_per_installment' => $discountValue,
+            'has_discount' => $discountValue > 0,
+            'discount_utilization_rate' => $totalDiscountPotential > 0 ? ($totalDiscountApplied / $totalDiscountPotential) * 100 : 0
+        ];
+    }
+    
     
     /**
      * Gerar carnê em PDF para uma mensalidade
@@ -408,32 +535,33 @@ class InstallmentManager {
     // ====================================================
     
     /**
-     * Gerar relatório completo de mensalidades
+     * Gerar relatório completo de mensalidades COM DESCONTO
      */
     public function generateInstallmentReport($startDate, $endDate, $options = []) {
         try {
-            $this->log("Gerando relatório de mensalidades - Período: {$startDate} a {$endDate}");
+            $this->log("Gerando relatório de mensalidades com desconto - Período: {$startDate} a {$endDate}");
             
             $poloId = $this->auth->isMaster() ? ($options['polo_id'] ?? null) : $this->auth->getUsuarioAtual()['polo_id'];
             
-            // Buscar dados do banco
-            $installments = $this->db->getInstallmentReport($startDate, $endDate, $poloId);
-            $stats = $this->db->getInstallmentStats($poloId);
+            // Buscar dados do banco COM DESCONTO
+            $installments = $this->db->getInstallmentReportWithDiscount($startDate, $endDate, $poloId);
+            $stats = $this->db->getInstallmentStatsWithDiscount($poloId);
             
             // Buscar dados adicionais da API se solicitado
             if ($options['include_api_data'] ?? false) {
                 $installments = $this->enrichInstallmentsWithApiData($installments);
             }
             
-            // Calcular métricas do relatório
-            $metrics = $this->calculateReportMetrics($installments, $stats);
+            // Calcular métricas do relatório COM DESCONTO
+            $metrics = $this->calculateReportMetricsWithDiscount($installments, $stats);
             
             // Agrupar dados por diferentes critérios
             $groupings = [
                 'by_month' => $this->groupInstallmentsByMonth($installments),
                 'by_customer' => $this->groupInstallmentsByCustomer($installments),
                 'by_billing_type' => $this->groupInstallmentsByBillingType($installments),
-                'by_status' => $this->groupInstallmentsByStatus($installments)
+                'by_status' => $this->groupInstallmentsByStatus($installments),
+                'by_discount' => $this->groupInstallmentsByDiscount($installments) // NOVO
             ];
             
             $report = [
@@ -455,7 +583,8 @@ class InstallmentManager {
                 'statistics' => $stats
             ];
             
-            $this->log("Relatório gerado - {$metrics['total_installments']} mensalidades, R$ " . number_format($metrics['total_value'], 2, ',', '.'));
+            $this->log("Relatório gerado com desconto - {$metrics['total_installments']} mensalidades, " .
+                      "Desconto potencial: R$ " . number_format($metrics['total_discount_potential'], 2, ',', '.'));
             
             return $report;
             
@@ -464,6 +593,95 @@ class InstallmentManager {
             throw $e;
         }
     }
+
+        /**
+     * ===== NOVA FUNÇÃO: CALCULAR MÉTRICAS COM DESCONTO =====
+     * Calcular métricas para relatório COM DESCONTO
+     */
+    private function calculateReportMetricsWithDiscount($installments, $stats) {
+        $totalInstallments = count($installments);
+        $totalValue = array_sum(array_column($installments, 'total_value'));
+        $totalReceived = array_sum(array_column($installments, 'amount_received'));
+        $totalPending = $totalValue - $totalReceived;
+        
+        // ===== CÁLCULOS DE DESCONTO =====
+        $totalDiscountPotential = 0;
+        $installmentsWithDiscount = 0;
+        $totalDiscountValue = 0;
+        
+        foreach ($installments as $installment) {
+            if (!empty($installment['has_discount']) && $installment['discount_value'] > 0) {
+                $installmentsWithDiscount++;
+                $discountPerInstallment = floatval($installment['discount_value']);
+                $installmentCount = intval($installment['installment_count']);
+                $totalDiscountValue += $discountPerInstallment * $installmentCount;
+                $totalDiscountPotential += $discountPerInstallment * $installmentCount;
+            }
+        }
+        
+        return [
+            'total_installments' => $totalInstallments,
+            'total_value' => $totalValue,
+            'total_received' => $totalReceived,
+            'total_pending' => $totalPending,
+            'avg_installment_value' => $totalInstallments > 0 ? $totalValue / $totalInstallments : 0,
+            'avg_completion_rate' => $totalInstallments > 0 ? 
+                array_sum(array_column($installments, 'completion_percentage')) / $totalInstallments : 0,
+            'active_installments' => count(array_filter($installments, function($i) { 
+                return $i['status'] === 'ACTIVE'; 
+            })),
+            'completed_installments' => count(array_filter($installments, function($i) { 
+                return $i['status'] === 'COMPLETED'; 
+            })),
+            'with_splits' => count(array_filter($installments, function($i) { 
+                return $i['has_splits']; 
+            })),
+            'collection_rate' => $totalValue > 0 ? ($totalReceived / $totalValue) * 100 : 0,
+            
+            // ===== MÉTRICAS DE DESCONTO =====
+            'installments_with_discount' => $installmentsWithDiscount,
+            'total_discount_potential' => $totalDiscountPotential,
+            'avg_discount_per_installment' => $installmentsWithDiscount > 0 ? ($totalDiscountValue / $installmentsWithDiscount) : 0,
+            'discount_adoption_rate' => $totalInstallments > 0 ? ($installmentsWithDiscount / $totalInstallments) * 100 : 0
+        ];
+    }
+    
+        /**
+     * ===== NOVA FUNÇÃO: AGRUPAR POR DESCONTO =====
+     * Agrupar mensalidades por uso de desconto
+     */
+    private function groupInstallmentsByDiscount($installments) {
+        $grouped = [
+            'with_discount' => [
+                'label' => 'Com Desconto',
+                'count' => 0,
+                'total_value' => 0,
+                'total_discount' => 0
+            ],
+            'without_discount' => [
+                'label' => 'Sem Desconto',
+                'count' => 0,
+                'total_value' => 0,
+                'total_discount' => 0
+            ]
+        ];
+        
+        foreach ($installments as $installment) {
+            $hasDiscount = !empty($installment['has_discount']) && $installment['discount_value'] > 0;
+            $group = $hasDiscount ? 'with_discount' : 'without_discount';
+            
+            $grouped[$group]['count']++;
+            $grouped[$group]['total_value'] += $installment['total_value'];
+            
+            if ($hasDiscount) {
+                $grouped[$group]['total_discount'] += ($installment['discount_value'] * $installment['installment_count']);
+            }
+        }
+        
+        return array_values($grouped);
+    }
+    
+
     
     /**
      * Relatório de performance por cliente
@@ -2150,6 +2368,6 @@ if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($_SERVER['SCRIP
     }
 }
 
-// Log de inicialização
-error_log("InstallmentManager v3.3 carregado com sucesso");
+// Log de inicialização do sistema de mensalidades COM DESCONTO
+error_log("Sistema de mensalidades COM DESCONTO carregado - v3.4");
 ?>
