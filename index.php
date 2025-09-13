@@ -316,13 +316,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $successMessage .= "<br><a href='{$result['invoiceUrl']}' target='_blank' class='btn btn-sm btn-outline-primary mt-2'><i class='bi bi-eye'></i> Ver 1ª Parcela</a>";
                     }
                     
-/*                     setMessage('success', $successMessage, [
+                    setMessage('success', $successMessage, [
                         'installment_id' => $result['installment'],
                         'installment_count' => $installmentCount,
                         'installment_value' => $installmentValue,
                         'total_value' => $totalValue,
                         'splits_count' => count($processedSplits)
-                    ]); */
+                    ]);
                     
                 } catch (Exception $e) {
                     throw new Exception('Erro ao criar mensalidade: ' . $e->getMessage());
