@@ -339,6 +339,483 @@ try {
                 jsonResponse(false, null, $e->getMessage());
             }
             break;
+
+            case 'create_installment_with_discount':
+                if (!$permissions['can_create_installments']) {
+                    throw new Exception('Você não tem permissão para criar mensalidades');
+                }
+                
+                try {
+                    // Incluir gerenciador de desconto se não estiver incluído
+                    if (!class_exists('InstallmentDiscountManager')) {
+                        require_once 'installment_discount_manager.php';
+                    }
+                    
+                    // Dados do formulário
+                    $paymentData = $_POST['payment'] ?? [];
+                    $installmentData = $_POST['installment'] ?? [];
+                    $splitsData = $_POST['splits'] ?? [];
+                    $discountData = $_POST['discount'] ?? [];
+                    
+                    // Log para debug
+                    error_log("Criando mensalidade com desconto - Usuário: " . $usuario['email']);
+                    error_log("Dados do desconto: " . json_encode($discountData));
+                    
+                    // Validações básicas do pagamento
+                    $requiredPaymentFields = ['customer', 'billingType', 'description', 'dueDate'];
+                    foreach ($requiredPaymentFields as $field) {
+                        if (empty($paymentData[$field])) {
+                            throw new Exception("Campo '{$field}' é obrigatório para criar mensalidade");
+                        }
+                    }
+                    
+                    // Validar parcelamento
+                    $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
+                    $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+                    
+                    if ($installmentCount < 2 || $installmentCount > 24) {
+                        throw new Exception('Número de parcelas deve ser entre 2 e 24');
+                    }
+                    
+                    if ($installmentValue <= 0) {
+                        throw new Exception('Valor da parcela deve ser maior que zero');
+                    }
+                    
+                    // Validar data de vencimento
+                    $dueDate = $paymentData['dueDate'];
+                    if (strtotime($dueDate) < strtotime(date('Y-m-d'))) {
+                        throw new Exception('Data de vencimento não pode ser anterior a hoje');
+                    }
+                    
+                    // Processar desconto se habilitado
+                    $processedDiscountData = null;
+                    if (!empty($discountData['enabled']) && ($discountData['enabled'] === 'true' || $discountData['enabled'] === true)) {
+                        $discountValue = floatval($discountData['value'] ?? 0);
+                        $discountType = $discountData['type'] ?? 'FIXED';
+                        $discountDeadline = $discountData['deadline'] ?? 'DUE_DATE';
+                        
+                        // Validar desconto
+                        if ($discountValue <= 0) {
+                            throw new Exception('Valor do desconto deve ser maior que zero');
+                        }
+                        
+                        if ($discountType === 'FIXED' && $discountValue >= $installmentValue) {
+                            throw new Exception('Desconto fixo não pode ser maior ou igual ao valor da parcela');
+                        }
+                        
+                        if ($discountType === 'PERCENTAGE' && $discountValue >= 100) {
+                            throw new Exception('Desconto percentual não pode ser maior ou igual a 100%');
+                        }
+                        
+                        $processedDiscountData = [
+                            'enabled' => true,
+                            'type' => $discountType,
+                            'value' => $discountValue,
+                            'deadline' => $discountDeadline
+                        ];
+                        
+                        error_log("Desconto processado: " . json_encode($processedDiscountData));
+                    }
+                    
+                    // Processar splits
+                    $processedSplits = [];
+                    $totalPercentage = 0;
+                    $totalFixedValue = 0;
+                    
+                    if (!empty($splitsData)) {
+                        foreach ($splitsData as $split) {
+                            if (!empty($split['walletId'])) {
+                                $splitData = ['walletId' => $split['walletId']];
+                                
+                                if (!empty($split['percentualValue']) && floatval($split['percentualValue']) > 0) {
+                                    $percentage = floatval($split['percentualValue']);
+                                    if ($percentage > 100) {
+                                        throw new Exception('Percentual de split não pode ser maior que 100%');
+                                    }
+                                    $splitData['percentualValue'] = $percentage;
+                                    $totalPercentage += $percentage;
+                                }
+                                
+                                if (!empty($split['fixedValue']) && floatval($split['fixedValue']) > 0) {
+                                    $fixedValue = floatval($split['fixedValue']);
+                                    if ($fixedValue >= $installmentValue) {
+                                        throw new Exception('Valor fixo do split não pode ser maior ou igual ao valor da parcela');
+                                    }
+                                    $splitData['fixedValue'] = $fixedValue;
+                                    $totalFixedValue += $fixedValue;
+                                }
+                                
+                                $processedSplits[] = $splitData;
+                            }
+                        }
+                        
+                        // Validar splits
+                        if ($totalPercentage > 100) {
+                            throw new Exception('A soma dos percentuais não pode exceder 100%');
+                        }
+                        
+                        if ($totalFixedValue >= $installmentValue) {
+                            throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
+                        }
+                    }
+                    
+                    // Instanciar gerenciador de desconto
+                    $discountManager = new InstallmentDiscountManager();
+                    
+                    // Criar mensalidade com desconto
+                    $result = $discountManager->createInstallmentWithDiscount(
+                        $paymentData, 
+                        $processedSplits, 
+                        $installmentData, 
+                        $processedDiscountData
+                    );
+                    
+                    // Salvar no banco com informações do polo
+                    $db = DatabaseManager::getInstance();
+                    $paymentSaveData = array_merge($result['data'], ['polo_id' => $usuario['polo_id']]);
+                    $db->savePayment($paymentSaveData);
+                    
+                    // Salvar splits se houver
+                    if (!empty($processedSplits)) {
+                        $db->savePaymentSplits($result['data']['id'], $processedSplits);
+                    }
+                    
+                    // Calcular informações para resposta
+                    $totalValue = $installmentCount * $installmentValue;
+                    $discountPerInstallment = 0;
+                    $totalSavings = 0;
+                    
+                    if ($processedDiscountData && $processedDiscountData['enabled']) {
+                        if ($processedDiscountData['type'] === 'FIXED') {
+                            $discountPerInstallment = $processedDiscountData['value'];
+                        } else {
+                            $discountPerInstallment = ($installmentValue * $processedDiscountData['value']) / 100;
+                        }
+                        $totalSavings = $discountPerInstallment * $installmentCount;
+                    }
+                    
+                    // Preparar mensagem de sucesso
+                    $successMessage = "✅ Mensalidade com desconto criada com sucesso!<br>";
+                    $successMessage .= "<strong>{$installmentCount} parcelas de R$ " . number_format($installmentValue, 2, ',', '.') . "</strong><br>";
+                    $successMessage .= "Total original: R$ " . number_format($totalValue, 2, ',', '.') . "<br>";
+                    
+                    if ($totalSavings > 0) {
+                        $valueWithDiscount = $installmentValue - $discountPerInstallment;
+                        $successMessage .= "💰 Valor com desconto: R$ " . number_format($valueWithDiscount, 2, ',', '.') . " por parcela<br>";
+                        $successMessage .= "<span class='text-success fw-bold'>💸 Economia total: R$ " . number_format($totalSavings, 2, ',', '.') . "</span><br>";
+                        
+                        // Adicionar informação sobre o prazo
+                        $deadlineTexts = [
+                            'DUE_DATE' => 'até o vencimento',
+                            'BEFORE_DUE_DATE' => 'até 1 dia antes do vencimento',
+                            '3_DAYS_BEFORE' => 'até 3 dias antes do vencimento',
+                            '5_DAYS_BEFORE' => 'até 5 dias antes do vencimento'
+                        ];
+                        $deadlineText = $deadlineTexts[$processedDiscountData['deadline']] ?? 'conforme configurado';
+                        $successMessage .= "<small class='text-muted'>🕒 Desconto válido {$deadlineText}</small><br>";
+                    }
+                    
+                    $successMessage .= "📅 Primeiro vencimento: " . date('d/m/Y', strtotime($paymentData['dueDate']));
+                    
+                    if (!empty($result['data']['invoiceUrl'])) {
+                        $successMessage .= "<br><a href='{$result['data']['invoiceUrl']}' target='_blank' class='btn btn-sm btn-outline-primary mt-2'><i class='bi bi-eye'></i> Ver 1ª Parcela</a>";
+                    }
+                    
+                    // Log de sucesso
+                    error_log("Mensalidade com desconto criada - ID: {$result['data']['installment']}, Economia: R$ " . number_format($totalSavings, 2));
+                    
+                    jsonResponse(true, [
+                        'installment_data' => $result['data'],
+                        'discount_info' => $processedDiscountData,
+                        'total_savings' => $totalSavings,
+                        'discount_per_installment' => $discountPerInstallment,
+                        'installment_count' => $installmentCount,
+                        'total_value' => $totalValue,
+                        'splits_count' => count($processedSplits)
+                    ], $successMessage);
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao criar mensalidade com desconto: " . $e->getMessage());
+                    throw new Exception('Erro ao criar mensalidade com desconto: ' . $e->getMessage());
+                }
+                break;
+            
+            // ===== NOVO: OBTER MENSALIDADE COM INFORMAÇÕES DE DESCONTO =====
+            case 'get-installment-with-discount':
+                try {
+                    $installmentId = $_GET['installment_id'] ?? '';
+                    
+                    if (empty($installmentId)) {
+                        throw new Exception('ID do parcelamento é obrigatório');
+                    }
+                    
+                    // Incluir gerenciador de desconto se não estiver incluído
+                    if (!class_exists('InstallmentDiscountManager')) {
+                        require_once 'installment_discount_manager.php';
+                    }
+                    
+                    $discountManager = new InstallmentDiscountManager();
+                    
+                    // Usar configuração dinâmica
+                    $dynamicAsaas = new DynamicAsaasConfig();
+                    $asaas = $dynamicAsaas->getInstance();
+                    
+                    // Buscar parcelas do ASAAS
+                    $payments = $asaas->getInstallmentPayments($installmentId);
+                    
+                    // Buscar informações de desconto
+                    $discountInfo = $discountManager->getInstallmentDiscount($installmentId);
+                    
+                    // Buscar informações do banco local
+                    $db = DatabaseManager::getInstance();
+                    $installmentInfo = $db->getInstallmentInfo($installmentId);
+                    
+                    jsonResponse(true, [
+                        'payments' => $payments,
+                        'installment_info' => $installmentInfo,
+                        'discount_info' => $discountInfo,
+                        'has_discount' => !empty($discountInfo),
+                        'total_payments' => count($payments['data'] ?? [])
+                    ], "Mensalidade com informações de desconto carregada");
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao buscar mensalidade com desconto: " . $e->getMessage());
+                    throw new Exception("Erro ao buscar mensalidade: " . $e->getMessage());
+                }
+                break;
+            
+            // ===== NOVO: GERAR CARNÊ COM INFORMAÇÕES DE DESCONTO =====
+            case 'generate-payment-book-with-discount':
+                try {
+                    $installmentId = $_POST['installment_id'] ?? '';
+                    
+                    if (empty($installmentId)) {
+                        throw new Exception('ID do parcelamento é obrigatório');
+                    }
+                    
+                    // Incluir gerenciador de desconto se não estiver incluído
+                    if (!class_exists('InstallmentDiscountManager')) {
+                        require_once 'installment_discount_manager.php';
+                    }
+                    
+                    $discountManager = new InstallmentDiscountManager();
+                    
+                    // Usar configuração dinâmica
+                    $dynamicAsaas = new DynamicAsaasConfig();
+                    $asaas = $dynamicAsaas->getInstance();
+                    
+                    // Gerar carnê padrão
+                    $paymentBook = $asaas->generateInstallmentPaymentBook($installmentId);
+                    
+                    if ($paymentBook['success']) {
+                        // Verificar se tem desconto ativo
+                        $hasDiscount = $discountManager->hasActiveDiscount($installmentId);
+                        $discountInfo = $discountManager->getInstallmentDiscount($installmentId);
+                        
+                        // Modificar nome do arquivo para indicar desconto
+                        $fileName = 'carne_' . $installmentId . '_' . date('YmdHis');
+                        if ($hasDiscount) {
+                            $fileName .= '_com_desconto';
+                        }
+                        $fileName .= '.pdf';
+                        
+                        $filePath = __DIR__ . '/temp/' . $fileName;
+                        
+                        // Criar diretório temp se não existir
+                        if (!is_dir(__DIR__ . '/temp')) {
+                            mkdir(__DIR__ . '/temp', 0755, true);
+                        }
+                        
+                        file_put_contents($filePath, $paymentBook['pdf_content']);
+                        
+                        $message = "Carnê gerado com sucesso!";
+                        if ($hasDiscount) {
+                            $discountText = $discountInfo['discount_type'] === 'FIXED' ? 
+                                'R$ ' . number_format($discountInfo['discount_value'], 2, ',', '.') : 
+                                $discountInfo['discount_value'] . '%';
+                            $message .= " (Inclui desconto de {$discountText} por parcela)";
+                        }
+                        
+                        jsonResponse(true, [
+                            'file_name' => $fileName,
+                            'file_path' => 'temp/' . $fileName,
+                            'download_url' => 'download.php?file=' . urlencode($fileName),
+                            'size' => strlen($paymentBook['pdf_content']),
+                            'has_discount' => $hasDiscount,
+                            'discount_info' => $discountInfo
+                        ], $message);
+                    } else {
+                        throw new Exception("Erro ao gerar carnê no ASAAS");
+                    }
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao gerar carnê com desconto: " . $e->getMessage());
+                    throw new Exception("Erro ao gerar carnê: " . $e->getMessage());
+                }
+                break;
+            
+            // ===== NOVO: RELATÓRIO DE DESCONTOS =====
+            case 'discount-report':
+                try {
+                    $startDate = $_GET['start'] ?? date('Y-m-01');
+                    $endDate = $_GET['end'] ?? date('Y-m-d');
+                    
+                    // Incluir gerenciador de desconto se não estiver incluído
+                    if (!class_exists('InstallmentDiscountManager')) {
+                        require_once 'installment_discount_manager.php';
+                    }
+                    
+                    $discountManager = new InstallmentDiscountManager();
+                    
+                    // Para master, usar polo específico se fornecido
+                    $poloId = null;
+                    if ($auth->isMaster() && isset($_GET['polo_id'])) {
+                        $poloId = (int)$_GET['polo_id'];
+                    } elseif (!$auth->isMaster()) {
+                        $poloId = $_SESSION['polo_id'];
+                    }
+                    
+                    $report = $discountManager->getDiscountReport($startDate, $endDate, $poloId);
+                    
+                    // Calcular estatísticas
+                    $totalInstallments = count($report);
+                    $totalOriginalValue = 0;
+                    $totalDiscountAmount = 0;
+                    $discountsByType = ['FIXED' => 0, 'PERCENTAGE' => 0];
+                    
+                    foreach ($report as $item) {
+                        $totalOriginalValue += $item['total_original_value'];
+                        $totalDiscountAmount += $item['total_discount_amount'];
+                        $discountsByType[$item['discount_type']]++;
+                    }
+                    
+                    $reportData = [
+                        'period' => ['start' => $startDate, 'end' => $endDate],
+                        'polo_context' => $poloId ? ($_SESSION['polo_nome'] ?? 'Polo ID: ' . $poloId) : 'Todos os polos',
+                        'total_installments' => $totalInstallments,
+                        'total_original_value' => $totalOriginalValue,
+                        'total_discount_amount' => $totalDiscountAmount,
+                        'discount_percentage' => $totalOriginalValue > 0 ? ($totalDiscountAmount / $totalOriginalValue) * 100 : 0,
+                        'discounts_by_type' => $discountsByType,
+                        'installment_details' => $report
+                    ];
+                    
+                    jsonResponse(true, ['report' => $reportData], "Relatório de descontos gerado com sucesso");
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao gerar relatório de descontos: " . $e->getMessage());
+                    throw new Exception("Erro ao gerar relatório de descontos: " . $e->getMessage());
+                }
+                break;
+            
+            // ===== NOVO: CALCULAR PREVIEW DE DESCONTO =====
+            case 'calculate-discount-preview':
+                try {
+                    $installmentValue = floatval($_GET['installment_value'] ?? 0);
+                    $installmentCount = (int)($_GET['installment_count'] ?? 0);
+                    $discountType = $_GET['discount_type'] ?? 'FIXED';
+                    $discountValue = floatval($_GET['discount_value'] ?? 0);
+                    
+                    if ($installmentValue <= 0 || $installmentCount <= 0 || $discountValue <= 0) {
+                        throw new Exception('Valores inválidos para cálculo');
+                    }
+                    
+                    $discountPerInstallment = 0;
+                    $finalInstallmentValue = $installmentValue;
+                    
+                    if ($discountType === 'FIXED') {
+                        $discountPerInstallment = min($discountValue, $installmentValue - 0.01);
+                    } else {
+                        $discountPerInstallment = ($installmentValue * $discountValue) / 100;
+                    }
+                    
+                    $finalInstallmentValue = $installmentValue - $discountPerInstallment;
+                    $totalSavings = $discountPerInstallment * $installmentCount;
+                    $originalTotalValue = $installmentValue * $installmentCount;
+                    $finalTotalValue = $finalInstallmentValue * $installmentCount;
+                    
+                    jsonResponse(true, [
+                        'original_installment_value' => $installmentValue,
+                        'discounted_installment_value' => $finalInstallmentValue,
+                        'discount_per_installment' => $discountPerInstallment,
+                        'original_total_value' => $originalTotalValue,
+                        'discounted_total_value' => $finalTotalValue,
+                        'total_savings' => $totalSavings,
+                        'discount_percentage_of_total' => ($totalSavings / $originalTotalValue) * 100,
+                        'installment_count' => $installmentCount
+                    ], "Preview de desconto calculado");
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao calcular preview de desconto: " . $e->getMessage());
+                    throw new Exception("Erro no cálculo: " . $e->getMessage());
+                }
+                break;
+            
+            // ===== NOVO: ESTATÍSTICAS DE DESCONTO =====
+            case 'discount-stats':
+                try {
+                    // Incluir gerenciador de desconto se não estiver incluído
+                    if (!class_exists('InstallmentDiscountManager')) {
+                        require_once 'installment_discount_manager.php';
+                    }
+                    
+                    $discountManager = new InstallmentDiscountManager();
+                    $db = DatabaseManager::getInstance();
+                    
+                    // Filtrar por polo se necessário
+                    $poloId = null;
+                    if (!$auth->isMaster()) {
+                        $poloId = $_SESSION['polo_id'];
+                    } elseif (isset($_GET['polo_id'])) {
+                        $poloId = (int)$_GET['polo_id'];
+                    }
+                    
+                    // Obter estatísticas de desconto dos últimos 30 dias
+                    $startDate = date('Y-m-d', strtotime('-30 days'));
+                    $endDate = date('Y-m-d');
+                    
+                    $report = $discountManager->getDiscountReport($startDate, $endDate, $poloId);
+                    
+                    // Estatísticas gerais
+                    $whereClause = $poloId ? 'WHERE polo_id = ?' : '';
+                    $params = $poloId ? [$poloId] : [];
+                    
+                    $stmt = $db->getConnection()->prepare("
+                        SELECT 
+                            COUNT(*) as total_with_discount,
+                            AVG(discount_value) as avg_discount_value,
+                            COUNT(CASE WHEN discount_type = 'FIXED' THEN 1 END) as fixed_discounts,
+                            COUNT(CASE WHEN discount_type = 'PERCENTAGE' THEN 1 END) as percentage_discounts
+                        FROM installments 
+                        WHERE has_discount = 1 " . ($poloId ? "AND polo_id = ?" : "")
+                    );
+                    $stmt->execute($params);
+                    $generalStats = $stmt->fetch();
+                    
+                    $stats = [
+                        'context' => $poloId ? ($_SESSION['polo_nome'] ?? 'Polo') : 'Global',
+                        'last_30_days' => [
+                            'installments_with_discount' => count($report),
+                            'total_savings' => array_sum(array_column($report, 'total_discount_amount')),
+                            'avg_savings_per_installment' => count($report) > 0 ? 
+                                array_sum(array_column($report, 'total_discount_amount')) / count($report) : 0
+                        ],
+                        'general' => [
+                            'total_installments_with_discount' => (int)$generalStats['total_with_discount'],
+                            'avg_discount_value' => (float)$generalStats['avg_discount_value'],
+                            'fixed_discounts' => (int)$generalStats['fixed_discounts'],
+                            'percentage_discounts' => (int)$generalStats['percentage_discounts']
+                        ]
+                    ];
+                    
+                    jsonResponse(true, $stats, "Estatísticas de desconto obtidas");
+                    
+                } catch (Exception $e) {
+                    error_log("Erro ao obter estatísticas de desconto: " . $e->getMessage());
+                    throw new Exception("Erro ao obter estatísticas: " . $e->getMessage());
+                }
+                break;
+        
             
         // ===== NOVA: BUSCAR PARCELAS DE UM PARCELAMENTO =====
         

@@ -58,6 +58,11 @@ $requiredFiles = [
         'desc' => 'Gerenciador de configurações',
         'required' => false,
         'provides' => ['ConfigManager', 'DynamicAsaasConfig']
+    ],
+    'installment_discount_manager.php' => [
+        'desc' => 'Gerenciador de descontos',
+        'required' => false,
+        'provides' => ['InstallmentDiscountManager']
     ]
 ];
 
