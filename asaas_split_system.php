@@ -154,28 +154,6 @@ class AsaasSplitPayment {
             if ($totalFixedValue >= $installmentValue) {
                 throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
             }
-
-
-            // ===== ADICIONAR DESCONTO SE ESTIVER PRESENTE E VÁLIDO =====
-            if (isset($paymentData['discount']) && 
-                is_array($paymentData['discount']) && 
-                !empty($paymentData['discount']['value']) && 
-                $paymentData['discount']['value'] > 0) {
-                        
-                $data['discount'] = $paymentData['discount'];
-                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
-            } else {
-                $this->log("NENHUM DESCONTO VÁLIDO para adicionar à requisição", 'INFO');
-            }
-            
-                    // Adicionar campos opcionais
-                    if (isset($paymentData['interest'])) {
-                        $data['interest'] = $paymentData['interest'];
-                    }
-                    
-                    if (isset($paymentData['fine'])) {
-                        $data['fine'] = $paymentData['fine'];
-                    }
             
             // ===== PREPARAR DADOS PARA API ASAAS =====
             $data = [
@@ -185,12 +163,29 @@ class AsaasSplitPayment {
                 'installmentCount' => $installmentCount,
                 'installmentValue' => $installmentValue,
                 'description' => $paymentData['description'],
-                'split' => $splitData,
-                'discount' => $paymentData['discount'],
-                'discount' => $data['discount']
+                'split' => $splitData
             ];
     
-
+            // ===== ADICIONAR DESCONTO SE ESTIVER PRESENTE E VÁLIDO =====
+            if (isset($paymentData['discount']) && 
+                is_array($paymentData['discount']) && 
+                !empty($paymentData['discount']['value']) && 
+                $paymentData['discount']['value'] > 0) {
+                
+                $data['discount'] = $paymentData['discount'];
+                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
+            } else {
+                $this->log("NENHUM DESCONTO VÁLIDO para adicionar à requisição", 'INFO');
+            }
+    
+            // Adicionar campos opcionais
+            if (isset($paymentData['interest'])) {
+                $data['interest'] = $paymentData['interest'];
+            }
+            
+            if (isset($paymentData['fine'])) {
+                $data['fine'] = $paymentData['fine'];
+            }
             
             // Adicionar informações adicionais sobre mensalidade
             if (isset($installmentData['description_suffix'])) {
