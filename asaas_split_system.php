@@ -166,16 +166,30 @@ class AsaasSplitPayment {
                 'split' => $splitData
             ];
     
-            // ===== ADICIONAR DESCONTO SE ESTIVER PRESENTE E VÁLIDO =====
+            // ===== CORREÇÃO PRINCIPAL: VERIFICAÇÃO CORRETA DO DESCONTO =====
+            // Verificar no paymentData primeiro
             if (isset($paymentData['discount']) && 
                 is_array($paymentData['discount']) && 
                 !empty($paymentData['discount']['value']) && 
                 $paymentData['discount']['value'] > 0) {
                 
                 $data['discount'] = $paymentData['discount'];
-                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
+                $this->log("✅ DESCONTO ADICIONADO À REQUISIÇÃO ASAAS (via paymentData): " . json_encode($paymentData['discount']), 'SUCCESS');
+                
+            } 
+            // Se não estiver no paymentData, verificar no installmentData
+            elseif (isset($installmentData['discount_value']) && 
+                    $installmentData['discount_value'] > 0) {
+                
+                $data['discount'] = [
+                    'value' => (float)$installmentData['discount_value'],
+                    'dueDateLimitDays' => 0,
+                    'type' => 'FIXED'
+                ];
+                $this->log("✅ DESCONTO ADICIONADO À REQUISIÇÃO ASAAS (via installmentData): R$ {$installmentData['discount_value']}", 'SUCCESS');
+                
             } else {
-                $this->log("NENHUM DESCONTO VÁLIDO para adicionar à requisição", 'INFO');
+                $this->log("ℹ️ NENHUM DESCONTO CONFIGURADO - dados recebidos OK", 'INFO');
             }
     
             // Adicionar campos opcionais
@@ -216,8 +230,8 @@ class AsaasSplitPayment {
                 'first_due_date' => $paymentData['dueDate'],
                 'split_applied_to_all' => true,
                 'splits_count' => count($splitData),
-                'has_discount' => isset($paymentData['discount']) && $paymentData['discount']['value'] > 0,
-                'discount_per_installment' => isset($paymentData['discount']) ? $paymentData['discount']['value'] : 0
+                'has_discount' => isset($data['discount']) && $data['discount']['value'] > 0,
+                'discount_per_installment' => isset($data['discount']) ? $data['discount']['value'] : 0
             ];
             
             return $response;
@@ -227,7 +241,6 @@ class AsaasSplitPayment {
             throw $e;
         }
     }
-
     
     /**
      * Buscar todas as parcelas de um parcelamento

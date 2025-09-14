@@ -410,8 +410,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $successMessage .= "<br><a href='{$result['data']['payment']['invoiceUrl']}' target='_blank' class='btn btn-sm btn-outline-primary mt-2'><i class='bi bi-eye'></i> Ver 1ª Parcela</a>";
                     }
                     
-                    setMessage('success', $successMessage); 
-                    /* [
+                    setMessage('success', $successMessage[
                         'installment_id' => $result['installment_id'] ?? 'N/A',
                         'installment_count' => $installmentCount,
                         'installment_value' => $installmentValue,
@@ -420,7 +419,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         'has_discount' => $discountInfo['has_discount'],
                         'discount_value' => $discountValue,
                         'total_savings' => $discountInfo['total_savings'] ?? 0
-                    ]); */
+                    ]); 
                     
                 } catch (Exception $e) {
                     throw new Exception('Erro ao criar mensalidade com desconto: ' . $e->getMessage());
