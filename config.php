@@ -73,27 +73,32 @@ class DatabaseManager {
      */
     public function saveInstallmentRecord($installmentData) {
         try {
-            error_log("Salvando mensalidade COM DESCONTO: " . json_encode($installmentData));
+            error_log("=== INÍCIO SAVE INSTALLMENT WITH DISCOUNT ===");
+            error_log("Dados recebidos: " . json_encode($installmentData, JSON_UNESCAPED_UNICODE));
             
-            $stmt = $this->pdo->prepare("
-                INSERT INTO installments (
-                    installment_id, polo_id, customer_id, installment_count, 
-                    installment_value, total_value, first_due_date, 
-                    billing_type, description, has_splits, splits_count, 
-                    created_by, first_payment_id, status,
-                    
-                    -- NOVOS CAMPOS DE DESCONTO --
-                    has_discount, discount_value, discount_type, 
-                    discount_deadline_type, discount_description,
-                    
-                    created_at
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE',
-                    ?, ?, ?, ?, ?, NOW()
-                )
-            ");
+            // ===== VERIFICAR SE TABELA TEM CAMPOS DE DESCONTO =====
+            $hasDiscountFields = $this->checkDiscountFieldsExist();
+            if (!$hasDiscountFields) {
+                error_log("⚠️ Campos de desconto não existem, adicionando...");
+                $this->addDiscountFieldsToExistingTable();
+            }
             
-            $result = $stmt->execute([
+            // ===== PREPARAR QUERY COM CAMPOS DE DESCONTO =====
+            $sql = "INSERT INTO installments (
+                installment_id, polo_id, customer_id, installment_count, 
+                installment_value, total_value, first_due_date, 
+                billing_type, description, has_splits, splits_count, 
+                created_by, first_payment_id, status,
+                has_discount, discount_value, discount_type, 
+                discount_deadline_type, discount_description,
+                created_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, NOW()
+            )";
+            
+            // ===== PREPARAR PARÂMETROS =====
+            $params = [
                 $installmentData['installment_id'],
                 $installmentData['polo_id'],
                 $installmentData['customer_id'],
@@ -107,35 +112,87 @@ class DatabaseManager {
                 $installmentData['splits_count'],
                 $installmentData['created_by'],
                 $installmentData['first_payment_id'],
+                'ACTIVE',
                 
-                // DADOS DO DESCONTO
+                // ===== PARÂMETROS DE DESCONTO =====
                 $installmentData['has_discount'] ?? 0,
                 $installmentData['discount_value'] ?? null,
                 $installmentData['discount_type'] ?? null,
-                $installmentData['discount_deadline_type'] ?? null,
+                $installmentData['discount_deadline_type'] ?? 'DUE_DATE',
                 $installmentData['discount_description'] ?? null
-            ]);
+            ];
+            
+            error_log("SQL preparado: " . $sql);
+            error_log("Parâmetros: " . json_encode($params, JSON_UNESCAPED_UNICODE));
+            
+            // ===== EXECUTAR INSERT =====
+            $stmt = $this->pdo->prepare($sql);
+            $result = $stmt->execute($params);
             
             if ($result) {
                 $recordId = $this->pdo->lastInsertId();
-                error_log("Mensalidade com desconto salva - ID: {$recordId}");
+                error_log("✅ INSERT executado com sucesso - ID: {$recordId}");
+                
+                // ===== VERIFICAÇÃO IMEDIATA =====
+                $verification = $this->pdo->prepare("
+                    SELECT installment_id, has_discount, discount_value, discount_type 
+                    FROM installments 
+                    WHERE id = ?
+                ");
+                $verification->execute([$recordId]);
+                $saved = $verification->fetch();
+                
+                if ($saved) {
+                    error_log("✅ VERIFICAÇÃO DO SALVAMENTO:");
+                    error_log("   - installment_id: " . $saved['installment_id']);
+                    error_log("   - has_discount: " . $saved['has_discount']);
+                    error_log("   - discount_value: " . $saved['discount_value']);
+                    error_log("   - discount_type: " . $saved['discount_type']);
+                }
+                
+                error_log("=== FIM SAVE INSTALLMENT WITH DISCOUNT - SUCESSO ===");
                 return $recordId;
+                
             } else {
-                throw new Exception("Falha ao executar inserção da mensalidade");
+                $errorInfo = $stmt->errorInfo();
+                error_log("❌ ERRO no INSERT: " . json_encode($errorInfo));
+                throw new Exception("Falha ao executar inserção: " . $errorInfo[2]);
             }
             
         } catch (PDOException $e) {
-            error_log("Erro ao salvar mensalidade com desconto: " . $e->getMessage());
+            error_log("❌ ERRO PDO: " . $e->getMessage());
             
-            // Se tabela não existe, tentar criar
+            // ===== SE TABELA NÃO EXISTE, CRIAR COM DESCONTO =====
             if (strpos($e->getMessage(), "doesn't exist") !== false) {
                 error_log("Tabela installments não existe, criando com campos de desconto...");
                 if ($this->createInstallmentsTableWithDiscount()) {
+                    error_log("Tabela criada, tentando salvar novamente...");
+                    return $this->saveInstallmentRecord($installmentData);
+                }
+            }
+            
+            // ===== SE CAMPO NÃO EXISTE, ADICIONAR =====
+            if (strpos($e->getMessage(), "Unknown column") !== false && strpos($e->getMessage(), "discount") !== false) {
+                error_log("Campos de desconto não existem, adicionando...");
+                if ($this->addDiscountFieldsToExistingTable()) {
+                    error_log("Campos adicionados, tentando salvar novamente...");
                     return $this->saveInstallmentRecord($installmentData);
                 }
             }
             
             throw new Exception("Erro ao salvar mensalidade: " . $e->getMessage());
+        }
+    }
+    
+    /**
+     * ===== NOVA FUNÇÃO: VERIFICAR SE CAMPOS DE DESCONTO EXISTEM =====
+     */
+    private function checkDiscountFieldsExist() {
+        try {
+            $stmt = $this->pdo->query("SHOW COLUMNS FROM installments LIKE 'has_discount'");
+            return $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            return false;
         }
     }
 

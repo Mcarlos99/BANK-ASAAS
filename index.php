@@ -3804,6 +3804,307 @@ window.testDiscountSubmission = function() {
                 }, 3000);
             }
         });
+
+
+
+        /**
+ * ADICIONAR NO index.php - Seção JavaScript
+ * Debug máximo do formulário de desconto
+ */
+
+// ===== FUNÇÃO DE DEBUG DO FORMULÁRIO =====
+function debugDiscountForm() {
+    console.log("🔍 DEBUG DO FORMULÁRIO DE DESCONTO");
+    console.log("==================================");
+    
+    // Verificar elementos do DOM
+    const elements = {
+        discountEnabled: document.getElementById('discount-enabled'),
+        discountValue: document.getElementById('discount-value'),
+        installmentValue: document.getElementById('installment-value'),
+        installmentCount: document.getElementById('installment-count'),
+        form: document.getElementById('installment-form-with-discount')
+    };
+    
+    console.log("1. ELEMENTOS DO DOM:");
+    Object.keys(elements).forEach(key => {
+        const element = elements[key];
+        console.log(`   ${key}:`, element ? 'ENCONTRADO' : 'NÃO ENCONTRADO');
+        if (element) {
+            console.log(`      value: "${element.value}"`);
+            console.log(`      checked: ${element.checked}`);
+            console.log(`      type: ${element.type}`);
+        }
+    });
+    
+    // Verificar estado do desconto
+    const discountEnabled = elements.discountEnabled?.checked || false;
+    const discountValue = parseFloat(elements.discountValue?.value || 0);
+    
+    console.log("2. ESTADO DO DESCONTO:");
+    console.log(`   Habilitado: ${discountEnabled}`);
+    console.log(`   Valor: ${discountValue}`);
+    console.log(`   Válido: ${discountEnabled && discountValue > 0}`);
+    
+    // Verificar dados da mensalidade
+    const installmentValue = parseFloat(elements.installmentValue?.value || 0);
+    const installmentCount = parseInt(elements.installmentCount?.value || 0);
+    
+    console.log("3. DADOS DA MENSALIDADE:");
+    console.log(`   Valor da parcela: ${installmentValue}`);
+    console.log(`   Quantidade de parcelas: ${installmentCount}`);
+    
+    // Verificar todos os campos do formulário
+    if (elements.form) {
+        const formData = new FormData(elements.form);
+        console.log("4. DADOS DO FORMULÁRIO COMPLETO:");
+        
+        for (let [key, value] of formData.entries()) {
+            console.log(`   ${key}: "${value}"`);
+        }
+    }
+    
+    // Simular envio para debug
+    console.log("5. SIMULAÇÃO DO ENVIO:");
+    const simulatedData = {
+        action: 'create_installment_with_discount',
+        discount_enabled: discountEnabled ? '1' : '0',
+        discount_value: discountValue.toString(),
+        'installment[installmentValue]': installmentValue.toString(),
+        'installment[installmentCount]': installmentCount.toString()
+    };
+    
+    console.log("   Dados que serão enviados:", simulatedData);
+    
+    return {
+        discountEnabled,
+        discountValue,
+        installmentValue,
+        installmentCount,
+        isValid: discountEnabled && discountValue > 0 && installmentValue > 0 && installmentCount > 1
+    };
+}
+
+// ===== INTERCEPTAR ENVIO DO FORMULÁRIO =====
+document.addEventListener('DOMContentLoaded', function() {
+    const form = document.getElementById('installment-form-with-discount');
+    
+    if (form) {
+        form.addEventListener('submit', function(e) {
+            console.log("📤 ENVIO DO FORMULÁRIO INTERCEPTADO");
+            console.log("==================================");
+            
+            // Debug antes do envio
+            const debugInfo = debugDiscountForm();
+            
+            // Verificar especificamente os campos de desconto
+            const discountEnabled = document.getElementById('discount-enabled')?.checked;
+            const discountValue = document.getElementById('discount-value')?.value;
+            
+            console.log("VERIFICAÇÃO FINAL ANTES DO ENVIO:");
+            console.log(`   discount_enabled checkbox: ${discountEnabled}`);
+            console.log(`   discount_value input: "${discountValue}"`);
+            
+            if (discountEnabled) {
+                console.log("✅ DESCONTO HABILITADO - DEVE SER ENVIADO");
+                
+                // Verificar se os campos estão sendo incluídos no FormData
+                const formData = new FormData(form);
+                console.log("CAMPOS DE DESCONTO NO FORMDATA:");
+                console.log(`   discount_enabled: "${formData.get('discount_enabled')}"`);
+                console.log(`   discount_value: "${formData.get('discount_value')}"`);
+                
+                // Se não estiver sendo enviado, adicionar manualmente
+                if (!formData.get('discount_enabled')) {
+                    console.log("🔧 ADICIONANDO discount_enabled MANUALMENTE");
+                    formData.set('discount_enabled', '1');
+                }
+                
+                if (!formData.get('discount_value') && discountValue) {
+                    console.log("🔧 ADICIONANDO discount_value MANUALMENTE");
+                    formData.set('discount_value', discountValue);
+                }
+                
+                // Log final
+                console.log("FORMDATA FINAL:");
+                for (let [key, value] of formData.entries()) {
+                    if (key.includes('discount') || key.includes('installment')) {
+                        console.log(`   ${key}: "${value}"`);
+                    }
+                }
+                
+            } else {
+                console.log("❌ DESCONTO NÃO HABILITADO");
+            }
+            
+            // Permitir envio normal
+            console.log("📤 PERMITINDO ENVIO NORMAL...");
+        });
+    }
+});
+
+// ===== FUNÇÃO PARA TESTAR MANUALMENTE =====
+window.testDiscountSubmission = function() {
+    console.log("🧪 TESTE MANUAL DE ENVIO COM DESCONTO");
+    console.log("=====================================");
+    
+    const debugInfo = debugDiscountForm();
+    
+    if (!debugInfo.isValid) {
+        console.log("❌ Dados inválidos para teste");
+        return false;
+    }
+    
+    // Fazer envio de teste via AJAX
+    const formData = new FormData();
+    formData.append('action', 'create_installment_with_discount');
+    formData.append('discount_enabled', '1');
+    formData.append('discount_value', debugInfo.discountValue.toString());
+    
+    // Adicionar campos mínimos para teste
+    formData.append('payment[customer]', 'test_customer');
+    formData.append('payment[billingType]', 'BOLETO');
+    formData.append('payment[dueDate]', '2025-01-15');
+    formData.append('payment[description]', 'Teste de desconto');
+    formData.append('installment[installmentCount]', debugInfo.installmentCount.toString());
+    formData.append('installment[installmentValue]', debugInfo.installmentValue.toString());
+    
+    console.log("📤 ENVIANDO TESTE VIA AJAX...");
+    
+    fetch('api.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log("📥 RESPOSTA DO TESTE:", data);
+        
+        if (data.success) {
+            console.log("✅ TESTE BEM-SUCEDIDO!");
+        } else {
+            console.log("❌ TESTE FALHOU:", data.error);
+        }
+    })
+    .catch(error => {
+        console.log("❌ ERRO NO TESTE:", error);
+    });
+    
+    return true;
+};
+
+// ===== MELHORAR VALIDAÇÃO EM TEMPO REAL =====
+function validateDiscountInput() {
+    const discountValue = parseFloat(document.getElementById('discount-value')?.value || 0);
+    const installmentValue = parseFloat(document.getElementById('installment-value')?.value || 0);
+    const validationDiv = document.getElementById('discount-validation');
+    const discountPreview = document.getElementById('discount-preview');
+    
+    // Debug da validação
+    console.log('🔍 Validando desconto:', {
+        discountValue,
+        installmentValue,
+        discountEnabled,
+        ratio: installmentValue > 0 ? (discountValue / installmentValue * 100).toFixed(1) + '%' : '0%'
+    });
+    
+    if (!discountEnabled || discountValue <= 0 || installmentValue <= 0) {
+        hideDiscountPreview();
+        if (validationDiv) validationDiv.style.display = 'none';
+        console.log('❌ Validação falhou: desconto desabilitado ou valores inválidos');
+        return false;
+    }
+    
+    // Validação usando configuração do sistema
+    const maxDiscountPercentage = SystemConfig.discount_config.max_percentage;
+    const maxDiscountValue = installmentValue * (maxDiscountPercentage / 100);
+    const discountPercentage = (discountValue / installmentValue) * 100;
+    
+    let validationHTML = '';
+    let isValid = true;
+    
+    // Validações
+    if (discountValue >= installmentValue) {
+        validationHTML += '<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto não pode ser maior ou igual ao valor da parcela</small></div>';
+        isValid = false;
+    } else if (discountValue > maxDiscountValue) {
+        validationHTML += `<div class="alert alert-danger py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto máximo: R$ ${maxDiscountValue.toLocaleString('pt-BR', {minimumFractionDigits: 2})} (${maxDiscountPercentage}% da parcela)</small></div>`;
+        isValid = false;
+    } else if (discountPercentage > 30) {
+        validationHTML += `<div class="alert alert-warning py-2 mb-2"><small><i class="bi bi-exclamation-triangle me-1"></i>Desconto alto (${discountPercentage.toFixed(1)}% da parcela). Pode impactar a receita.</small></div>`;
+    } else if (discountPercentage < 5 && discountValue > 0) {
+        validationHTML += `<div class="alert alert-info py-2 mb-2"><small><i class="bi bi-info-circle me-1"></i>Desconto baixo (${discountPercentage.toFixed(1)}%) pode ter pouco impacto na conversão.</small></div>`;
+    }
+    
+    if (validationDiv) {
+        validationDiv.innerHTML = validationHTML;
+        validationDiv.style.display = validationHTML ? 'block' : 'none';
+    }
+    
+    // Atualizar preview se válido
+    if (isValid && discountValue > 0) {
+        updateDiscountPreview(discountValue, installmentValue);
+        if (discountPreview) discountPreview.style.display = 'block';
+        
+        console.log('✅ Desconto válido:', {
+            value: discountValue,
+            percentage: discountPercentage.toFixed(1) + '%',
+            maxAllowed: maxDiscountValue
+        });
+    } else {
+        hideDiscountPreview();
+        
+        if (!isValid) {
+            console.log('❌ Desconto inválido:', {
+                value: discountValue,
+                installmentValue,
+                errors: validationHTML.length > 0
+            });
+        }
+    }
+    
+    return isValid;
+}
+
+// ===== ADICIONAR BOTÃO DE DEBUG NA INTERFACE =====
+document.addEventListener('DOMContentLoaded', function() {
+    // Adicionar botão de debug se estivermos em desenvolvimento
+    if (window.location.hostname === 'localhost' || SystemConfig.environment === 'sandbox') {
+        const debugButton = document.createElement('button');
+        debugButton.type = 'button';
+        debugButton.className = 'btn btn-sm btn-outline-warning position-fixed';
+        debugButton.style.cssText = 'top: 10px; right: 10px; z-index: 9999;';
+        debugButton.innerHTML = '<i class="bi bi-bug"></i> Debug Desconto';
+        debugButton.onclick = debugDiscountForm;
+        
+        document.body.appendChild(debugButton);
+        
+        console.log('🐛 Botão de debug adicionado. Clique para verificar o formulário.');
+    }
+});
+
+// ===== INTERCEPTAR MUDANÇAS NOS CAMPOS DE DESCONTO =====
+document.addEventListener('DOMContentLoaded', function() {
+    const discountEnabledCheckbox = document.getElementById('discount-enabled');
+    const discountValueInput = document.getElementById('discount-value');
+    
+    if (discountEnabledCheckbox) {
+        discountEnabledCheckbox.addEventListener('change', function() {
+            console.log(`💰 Desconto ${this.checked ? 'HABILITADO' : 'DESABILITADO'}`);
+            discountEnabled = this.checked;
+        });
+    }
+    
+    if (discountValueInput) {
+        discountValueInput.addEventListener('input', function() {
+            const value = parseFloat(this.value || 0);
+            console.log(`💰 Valor do desconto alterado para: R$ ${value.toFixed(2)}`);
+        });
+    }
+});
+
+console.log('🔍 Sistema de debug de desconto carregado');
+console.log('💡 Use window.testDiscountSubmission() para testar envio manual');
+console.log('🐛 Use debugDiscountForm() para verificar estado atual');
         
     </script>
     
