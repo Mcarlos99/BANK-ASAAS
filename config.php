@@ -2460,4 +2460,97 @@ class InstallmentFormatter {
 // Log de inicialização
 error_log("Sistema de mensalidades COM DESCONTO carregado - v3.4");
 error_log("Configurações: MAX_DISCOUNT=" . MAX_DISCOUNT_PERCENTAGE . "%, TIPO=" . DEFAULT_DISCOUNT_TYPE);
+
+
+/**
+ * ===== FUNÇÃO PARA ATUALIZAÇÃO VIA CLI =====
+ */
+function updateSystemForDiscount() {
+    try {
+        echo "🏷️ Atualizando sistema para suporte a DESCONTO em mensalidades...\n";
+        
+        $db = DatabaseManager::getInstance();
+        
+        if ($db->addDiscountFieldsToExistingTable()) {
+            echo "✅ Estrutura do banco atualizada para desconto\n";
+            echo "🎯 Novas funcionalidades:\n";
+            echo "   • Desconto fixo por parcela\n";
+            echo "   • Desconto válido até vencimento\n";
+            echo "   • Rastreamento de uso do desconto\n";
+            echo "   • Relatórios de performance do desconto\n";
+            echo "   • Máximo de " . MAX_DISCOUNT_PERCENTAGE . "% por parcela\n";
+            return true;
+        } else {
+            echo "❌ Erro ao atualizar estrutura do banco\n";
+            return false;
+        }
+        
+    } catch (Exception $e) {
+        echo "❌ Erro na atualização: " . $e->getMessage() . "\n";
+        return false;
+    }
+}
+
+// Executar comandos via linha de comando
+if (php_sapi_name() === 'cli' && basename(__FILE__) === basename($_SERVER['SCRIPT_NAME'])) {
+    
+    $command = isset($argv[1]) ? $argv[1] : '';
+    
+    switch ($command) {
+        case 'add-discount':
+            updateSystemForDiscount();
+            break;
+            
+        case 'test-discount':
+            try {
+                $db = DatabaseManager::getInstance();
+                $stats = $db->getInstallmentStatsWithDiscount();
+                
+                echo "📊 Estatísticas de Desconto:\n";
+                echo "================================\n";
+                echo "Mensalidades com desconto: " . $stats['installments_with_discount'] . "\n";
+                echo "Potencial de desconto: R$ " . number_format($stats['total_discount_potential'], 2, ',', '.') . "\n";
+                echo "Taxa de adoção: " . $stats['discount_adoption_rate'] . "%\n";
+                echo "Eficiência do desconto: " . $stats['discount_efficiency'] . "%\n";
+                
+            } catch (Exception $e) {
+                echo "❌ Erro: " . $e->getMessage() . "\n";
+            }
+            break;
+            
+        default:
+            echo "Sistema de Mensalidades com DESCONTO v3.4\n";
+            echo "==========================================\n\n";
+            echo "Comandos disponíveis:\n";
+            echo "  add-discount    - Atualizar banco para suporte a desconto\n";
+            echo "  test-discount   - Testar funcionalidades de desconto\n\n";
+            echo "💰 Novo: Desconto automático até vencimento!\n";
+            echo "🏷️ Funcionalidades:\n";
+            echo "  • Desconto fixo por parcela\n";
+            echo "  • Aplicação automática até vencimento\n";
+            echo "  • Máximo " . MAX_DISCOUNT_PERCENTAGE . "% por parcela\n";
+            echo "  • Relatórios de performance\n";
+            break;
+    }
+}
+
+// Executar migração automática quando arquivo for incluído
+if (!defined('SKIP_AUTO_UPDATE')) {
+    try {
+        $db = DatabaseManager::getInstance();
+        
+        // Verificar se campos de desconto existem
+        $result = $db->getConnection()->query("SHOW COLUMNS FROM installments LIKE 'has_discount'");
+        if ($result->rowCount() == 0) {
+            error_log("Campos de desconto não existem, adicionando automaticamente...");
+            $db->addDiscountFieldsToExistingTable();
+            error_log("Sistema atualizado para suporte a desconto automaticamente");
+        }
+        
+    } catch (Exception $e) {
+        error_log("Erro na migração automática para desconto: " . $e->getMessage());
+    }
+}
+
+
 ?>
