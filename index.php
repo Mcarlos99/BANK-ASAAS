@@ -278,128 +278,243 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         switch ($action) {
             
             // ===== NOVA AÇÃO: CRIAR MENSALIDADE COM DESCONTO =====
+
+
             case 'create_installment_with_discount':
-                if (!$permissions['can_create_installments_with_discount']) {
-                    throw new Exception('Você não tem permissão para criar mensalidades com desconto');
-                }
-                
-                // Validar dados básicos
-                $paymentData = $_POST['payment'] ?? [];
-                $installmentData = $_POST['installment'] ?? [];
-                $splitsData = $_POST['splits'] ?? [];
-                
-                // ===== PROCESSAR DADOS DO DESCONTO =====
-                $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
-                $discountValue = 0;
-                $discountInfo = ['has_discount' => false];
-                
-                if ($discountEnabled) {
+                try {
+                    // ===== LOG ULTRA-DETALHADO - PONTO 1: RECEBIMENTO =====
+                    error_log("🔍 [PONTO 1] DADOS RECEBIDOS NO INDEX.PHP");
+                    error_log("==========================================");
+                    error_log("POST completo: " . json_encode($_POST, JSON_UNESCAPED_UNICODE));
+                    
+                    // Extrair dados específicos de desconto
+                    $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
                     $discountValue = floatval($_POST['discount_value'] ?? 0);
+                    
+                    error_log("🏷️ DESCONTO EXTRAÍDO NO INDEX:");
+                    error_log("   - discount_enabled: " . ($_POST['discount_enabled'] ?? 'AUSENTE'));
+                    error_log("   - discount_value: " . ($_POST['discount_value'] ?? 'AUSENTE'));
+                    error_log("   - discountEnabled (bool): " . ($discountEnabled ? 'TRUE' : 'FALSE'));
+                    error_log("   - discountValue (float): {$discountValue}");
+                    
+                    // Verificar permissões
+                    if (!$permissions['can_create_installments_with_discount']) {
+                        throw new Exception('Você não tem permissão para criar mensalidades com desconto');
+                    }
+                    
+                    // ===== PREPARAR DADOS COM LOG DETALHADO =====
+                    
+                    // Dados do pagamento
+                    $paymentData = [
+                        'customer' => $_POST['payment']['customer'] ?? '',
+                        'billingType' => $_POST['payment']['billingType'] ?? 'BOLETO',
+                        'dueDate' => $_POST['payment']['dueDate'] ?? '',
+                        'description' => $_POST['payment']['description'] ?? ''
+                    ];
+                    
+                    // Dados do parcelamento
+                    $installmentData = [
+                        'installmentCount' => (int)($_POST['installment']['installmentCount'] ?? 0),
+                        'installmentValue' => (float)($_POST['installment']['installmentValue'] ?? 0),
+                        'description_suffix' => $_POST['installment']['description_suffix'] ?? null
+                    ];
+                    
+                    error_log("🔍 [PONTO 2] DADOS BÁSICOS PREPARADOS:");
+                    error_log("   paymentData: " . json_encode($paymentData));
+                    error_log("   installmentData: " . json_encode($installmentData));
+                    
+                    // ===== VALIDAÇÕES BÁSICAS =====
+                    $requiredPaymentFields = ['customer', 'billingType', 'description', 'dueDate'];
+                    foreach ($requiredPaymentFields as $field) {
+                        if (empty($paymentData[$field])) {
+                            throw new Exception("Campo '{$field}' é obrigatório para criar mensalidade");
+                        }
+                    }
+                    
+                    // Validações do parcelamento
+                    $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
                     $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
                     
-                    // Validar desconto
-                    $discountValidation = validateDiscountValue($discountValue, $installmentValue);
-                    
-                    if (!$discountValidation['valid']) {
-                        throw new Exception('Erro no desconto: ' . implode('; ', $discountValidation['errors']));
+                    if ($installmentCount < MIN_INSTALLMENTS || $installmentCount > MAX_INSTALLMENTS) {
+                        throw new Exception('Número de parcelas deve ser entre ' . MIN_INSTALLMENTS . ' e ' . MAX_INSTALLMENTS);
                     }
                     
-                    // Preparar dados do desconto para InstallmentManager
-                    $installmentData['discount_value'] = $discountValue;
-                    $installmentData['discount_type'] = DEFAULT_DISCOUNT_TYPE;
-                    $installmentData['discount_deadline_type'] = 'DUE_DATE';
-                    
-                    $discountInfo = formatDiscountInfo($discountValue, $installmentValue, $installmentData['installmentCount']);
-                    
-                    error_log("Desconto configurado: R$ {$discountValue} por parcela, total: R$ {$discountInfo['total_savings']}");
-                }
-                
-                // Validações básicas do pagamento
-                $requiredPaymentFields = ['customer', 'billingType', 'description', 'dueDate'];
-                foreach ($requiredPaymentFields as $field) {
-                    if (empty($paymentData[$field])) {
-                        throw new Exception("Campo '{$field}' é obrigatório para criar mensalidade");
+                    if ($installmentValue < MIN_INSTALLMENT_VALUE || $installmentValue > MAX_INSTALLMENT_VALUE) {
+                        throw new Exception('Valor da parcela deve ser entre R$ ' . 
+                            number_format(MIN_INSTALLMENT_VALUE, 2, ',', '.') . ' e R$ ' . 
+                            number_format(MAX_INSTALLMENT_VALUE, 2, ',', '.'));
                     }
-                }
-                
-                // Validações do parcelamento
-                $installmentCount = (int)($installmentData['installmentCount'] ?? 0);
-                $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
-                
-                if ($installmentCount < MIN_INSTALLMENTS || $installmentCount > MAX_INSTALLMENTS) {
-                    throw new Exception('Número de parcelas deve ser entre ' . MIN_INSTALLMENTS . ' e ' . MAX_INSTALLMENTS);
-                }
-                
-                if ($installmentValue < MIN_INSTALLMENT_VALUE || $installmentValue > MAX_INSTALLMENT_VALUE) {
-                    throw new Exception('Valor da parcela deve ser entre R$ ' . 
-                        number_format(MIN_INSTALLMENT_VALUE, 2, ',', '.') . ' e R$ ' . 
-                        number_format(MAX_INSTALLMENT_VALUE, 2, ',', '.'));
-                }
-                
-                // Validar data de vencimento
-                $dueDate = $paymentData['dueDate'];
-                if (strtotime($dueDate) < strtotime(date('Y-m-d'))) {
-                    throw new Exception('Data de vencimento não pode ser anterior a hoje');
-                }
-                
-                // Processar splits
-                $processedSplits = [];
-                $totalPercentage = 0;
-                $totalFixedValue = 0;
-                
-                foreach ($splitsData as $split) {
-                    if (!empty($split['walletId'])) {
-                        $splitData = ['walletId' => $split['walletId']];
+                    
+                    // Validar data de vencimento
+                    $dueDate = $paymentData['dueDate'];
+                    if (strtotime($dueDate) < strtotime(date('Y-m-d'))) {
+                        throw new Exception('Data de vencimento não pode ser anterior a hoje');
+                    }
+                    
+                    // ===== APLICAR DESCONTO COM LOG ULTRA-DETALHADO =====
+                    if ($discountEnabled && $discountValue > 0) {
+                        error_log("🔍 [PONTO 3] APLICANDO DESCONTO AOS DADOS:");
+                        error_log("   Condição discountEnabled: " . ($discountEnabled ? 'PASSOU' : 'FALHOU'));
+                        error_log("   Condição discountValue > 0: " . ($discountValue > 0 ? 'PASSOU' : 'FALHOU'));
                         
-                        if (!empty($split['percentualValue']) && floatval($split['percentualValue']) > 0) {
-                            $percentage = floatval($split['percentualValue']);
-                            if ($percentage > 100) {
-                                throw new Exception('Percentual de split não pode ser maior que 100%');
-                            }
-                            $splitData['percentualValue'] = $percentage;
-                            $totalPercentage += $percentage;
+                        // Validar desconto
+                        $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+                        if ($discountValue >= $installmentValue) {
+                            error_log("❌ ERRO: Desconto >= valor da parcela");
+                            throw new Exception('Desconto não pode ser maior ou igual ao valor da parcela');
                         }
                         
-                        if (!empty($split['fixedValue']) && floatval($split['fixedValue']) > 0) {
-                            $fixedValue = floatval($split['fixedValue']);
-                            if ($fixedValue >= $installmentValue) {
-                                throw new Exception('Valor fixo do split não pode ser maior ou igual ao valor da parcela');
-                            }
-                            $splitData['fixedValue'] = $fixedValue;
-                            $totalFixedValue += $fixedValue;
+                        $maxDiscountPercentage = defined('MAX_DISCOUNT_PERCENTAGE') ? MAX_DISCOUNT_PERCENTAGE : 50;
+                        $maxDiscountValue = $installmentValue * ($maxDiscountPercentage / 100);
+                        
+                        if ($discountValue > $maxDiscountValue) {
+                            error_log("❌ ERRO: Desconto > máximo permitido ({$maxDiscountValue})");
+                            throw new Exception("Desconto máximo permitido: R$ " . number_format($maxDiscountValue, 2, ',', '.') . " ({$maxDiscountPercentage}% da parcela)");
                         }
                         
-                        $processedSplits[] = $splitData;
-                    }
-                }
-                
-                // Validar splits
-                if (!empty($processedSplits)) {
-                    if ($totalPercentage > 100) {
-                        throw new Exception('A soma dos percentuais não pode exceder 100%');
+                        error_log("✅ DESCONTO VÁLIDO - APLICANDO AOS DADOS");
+                        
+                        // APLICAR AO PAYMENT DATA
+                        $paymentData['discount'] = [
+                            'value' => $discountValue,
+                            'dueDateLimitDays' => 0,
+                            'type' => 'FIXED'
+                        ];
+                        
+                        error_log("✅ DESCONTO APLICADO AO paymentData:");
+                        error_log("   paymentData['discount']: " . json_encode($paymentData['discount']));
+                        
+                        // APLICAR AO INSTALLMENT DATA
+                        $installmentData['discount_value'] = $discountValue;
+                        $installmentData['discount_type'] = 'FIXED';
+                        $installmentData['discount_deadline_type'] = 'DUE_DATE';
+                        $installmentData['discount_description'] = 'Desconto configurado no index.php - ' . date('H:i:s');
+                        
+                        error_log("✅ DESCONTO APLICADO AO installmentData:");
+                        error_log("   discount_value: " . $installmentData['discount_value']);
+                        error_log("   discount_type: " . $installmentData['discount_type']);
+                        error_log("   discount_deadline_type: " . $installmentData['discount_deadline_type']);
+                        error_log("   discount_description: " . $installmentData['discount_description']);
+                        
+                    } else {
+                        error_log("🔍 [PONTO 3] DESCONTO NÃO SERÁ APLICADO:");
+                        error_log("   Motivo: discountEnabled={$discountEnabled}, discountValue={$discountValue}");
                     }
                     
-                    if ($totalFixedValue >= $installmentValue) {
-                        throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
+                    // ===== PROCESSAR SPLITS =====
+                    $processedSplits = [];
+                    $totalPercentage = 0;
+                    $totalFixedValue = 0;
+                    
+                    foreach ($_POST['splits'] ?? [] as $split) {
+                        if (!empty($split['walletId'])) {
+                            $splitData = ['walletId' => $split['walletId']];
+                            
+                            if (!empty($split['percentualValue']) && floatval($split['percentualValue']) > 0) {
+                                $percentage = floatval($split['percentualValue']);
+                                if ($percentage > 100) {
+                                    throw new Exception('Percentual de split não pode ser maior que 100%');
+                                }
+                                $splitData['percentualValue'] = $percentage;
+                                $totalPercentage += $percentage;
+                            }
+                            
+                            if (!empty($split['fixedValue']) && floatval($split['fixedValue']) > 0) {
+                                $fixedValue = floatval($split['fixedValue']);
+                                if ($fixedValue >= $installmentValue) {
+                                    throw new Exception('Valor fixo do split não pode ser maior ou igual ao valor da parcela');
+                                }
+                                $splitData['fixedValue'] = $fixedValue;
+                                $totalFixedValue += $fixedValue;
+                            }
+                            
+                            $processedSplits[] = $splitData;
+                        }
                     }
-                }
-                
-                // ===== CRIAR MENSALIDADE COM DESCONTO VIA INSTALLMENT MANAGER =====
-                try {
+                    
+                    // Validar splits
+                    if (!empty($processedSplits)) {
+                        if ($totalPercentage > 100) {
+                            throw new Exception('A soma dos percentuais não pode exceder 100%');
+                        }
+                        
+                        if ($totalFixedValue >= $installmentValue) {
+                            throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
+                        }
+                    }
+                    
+                    error_log("🔍 [PONTO 4] DADOS FINAIS PARA INSTALLMENT MANAGER:");
+                    error_log("   paymentData FINAL: " . json_encode($paymentData, JSON_UNESCAPED_UNICODE));
+                    error_log("   installmentData FINAL: " . json_encode($installmentData, JSON_UNESCAPED_UNICODE));
+                    error_log("   processedSplits: " . json_encode($processedSplits));
+                    
+                    // ===== CHAMAR INSTALLMENT MANAGER =====
+                    error_log("🔍 [PONTO 5] CHAMANDO INSTALLMENT MANAGER...");
+                    
                     $installmentManager = new InstallmentManager();
                     $result = $installmentManager->createInstallment($paymentData, $processedSplits, $installmentData);
                     
-                    // Preparar mensagem de sucesso COM INFORMAÇÕES DE DESCONTO
+                    error_log("🔍 [PONTO 6] RESULTADO DO INSTALLMENT MANAGER:");
+                    error_log("   success: " . ($result['success'] ?? 'AUSENTE'));
+                    error_log("   installment_id: " . ($result['installment_id'] ?? 'AUSENTE'));
+                    error_log("   Resultado completo: " . json_encode($result, JSON_UNESCAPED_UNICODE));
+                    
+                    // ===== VERIFICAÇÃO FINAL NO BANCO =====
+                    if (isset($result['installment_id'])) {
+                        error_log("🔍 [PONTO 7] VERIFICAÇÃO FINAL NO BANCO:");
+                        
+                        $db = DatabaseManager::getInstance();
+                        $finalCheck = $db->getConnection()->prepare("
+                            SELECT installment_id, has_discount, discount_value, discount_type, discount_description
+                            FROM installments 
+                            WHERE installment_id = ?
+                        ");
+                        $finalCheck->execute([$result['installment_id']]);
+                        $finalData = $finalCheck->fetch();
+                        
+                        if ($finalData) {
+                            error_log("   DADOS FINAIS NO BANCO:");
+                            error_log("   - installment_id: " . $finalData['installment_id']);
+                            error_log("   - has_discount: " . $finalData['has_discount']);
+                            error_log("   - discount_value: " . $finalData['discount_value']);
+                            error_log("   - discount_type: " . $finalData['discount_type']);
+                            error_log("   - discount_description: " . $finalData['discount_description']);
+                            
+                            // ===== CONCLUSÃO DO DEBUG =====
+                            if ($discountEnabled && $discountValue > 0) {
+                                if ($finalData['has_discount'] == 1 && $finalData['discount_value'] == $discountValue) {
+                                    error_log("🎉 SUCESSO: Desconto salvo corretamente!");
+                                } else {
+                                    error_log("❌ FALHA: Desconto configurado mas não salvo!");
+                                    error_log("   Esperado: has_discount=1, discount_value={$discountValue}");
+                                    error_log("   Encontrado: has_discount={$finalData['has_discount']}, discount_value={$finalData['discount_value']}");
+                                }
+                            } else {
+                                error_log("ℹ️ SEM DESCONTO: Comportamento correto");
+                            }
+                        } else {
+                            error_log("❌ ERRO: Mensalidade não encontrada no banco!");
+                        }
+                    }
+                    
+                    // ===== PREPARAR MENSAGEM DE SUCESSO =====
+                    if (!$result || !isset($result['success']) || !$result['success']) {
+                        throw new Exception('Resposta inválida do InstallmentManager');
+                    }
+                    
                     $totalValue = $installmentCount * $installmentValue;
                     $successMessage = "✅ Mensalidade criada com sucesso!<br>";
                     $successMessage .= "<strong>{$installmentCount} parcelas de R$ " . number_format($installmentValue, 2, ',', '.') . "</strong><br>";
                     $successMessage .= "Total: R$ " . number_format($totalValue, 2, ',', '.') . "<br>";
                     
                     // ===== ADICIONAR INFORMAÇÕES DE DESCONTO NA MENSAGEM =====
-                    if ($discountInfo['has_discount']) {
+                    if ($discountEnabled && $discountValue > 0) {
+                        $totalSavings = $discountValue * $installmentCount;
+                        $discountPercentage = ($discountValue / $installmentValue) * 100;
+                        
                         $successMessage .= "<br>🏷️ <strong>Desconto configurado:</strong><br>";
-                        $successMessage .= "• {$discountInfo['per_installment_info']}<br>";
-                        $successMessage .= "• Economia total: <span class='text-success'>{$discountInfo['formatted_total_savings']}</span><br>";
+                        $successMessage .= "• R$ " . number_format($discountValue, 2, ',', '.') . " por parcela (" . number_format($discountPercentage, 1) . "%)<br>";
+                        $successMessage .= "• Economia total: <span class='text-success'>R$ " . number_format($totalSavings, 2, ',', '.') . "</span><br>";
                         $successMessage .= "• <small class='text-info'>Válido até o vencimento de cada parcela</small><br>";
                     }
                     
@@ -410,22 +525,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $successMessage .= "<br><a href='{$result['data']['payment']['invoiceUrl']}' target='_blank' class='btn btn-sm btn-outline-primary mt-2'><i class='bi bi-eye'></i> Ver 1ª Parcela</a>";
                     }
                     
-                    setMessage('success', $successMessage); 
-                    /* [
-                        'installment_id' => $result['installment_id'] ?? 'N/A',
-                        'installment_count' => $installmentCount,
-                        'installment_value' => $installmentValue,
-                        'total_value' => $totalValue,
-                        'splits_count' => count($processedSplits),
-                        'has_discount' => $discountInfo['has_discount'],
-                        'discount_value' => $discountValue,
-                        'total_savings' => $discountInfo['total_savings'] ?? 0
-                    ]); */
+                    setMessage('success', $successMessage);
+                    
+                    error_log("==========================================");
+                    error_log("🔍 FIM DO LOG ULTRA-DETALHADO");
+                    error_log("==========================================");
                     
                 } catch (Exception $e) {
-                    throw new Exception('Erro ao criar mensalidade com desconto: ' . $e->getMessage());
+                    error_log("❌ ERRO GERAL no case create_installment_with_discount: " . $e->getMessage());
+                    error_log("Stack trace: " . $e->getTraceAsString());
+                    
+                    setMessage('error', $e->getMessage(), [
+                        'action' => 'create_installment_with_discount', 
+                        'user' => $usuario['email'],
+                        'discount_enabled' => $_POST['discount_enabled'] ?? 'não',
+                        'discount_value' => $_POST['discount_value'] ?? '0'
+                    ]);
+                    
+                    // Log detalhado do erro COM INFORMAÇÕES DE DESCONTO
+                    error_log("Erro na ação create_installment_with_discount COM DESCONTO por {$usuario['email']}: " . $e->getMessage() . 
+                             " | Desconto: " . ($_POST['discount_value'] ?? '0'));
                 }
                 break;
+
+
+
+
+
+
+
+
             
             // ===== AÇÃO EXISTENTE MANTIDA: CRIAR MENSALIDADE TRADICIONAL =====
             case 'create_installment':
