@@ -731,27 +731,74 @@ try {
     
     // Carregar mensalidades recentes COM INFORMAÇÕES DE DESCONTO
     try {
-        $installmentQuery = "SELECT *, 
-                            CASE WHEN has_discount = 1 THEN 
-                                CONCAT('R$ ', FORMAT(discount_value, 2, 'de_DE'), ' por parcela') 
+        $installmentQuery = "SELECT i.*, 
+                            c.name as customer_name, 
+                            c.email as customer_email,
+                            CASE WHEN i.has_discount = 1 AND i.discount_value > 0 THEN 
+                                CONCAT('R$ ', FORMAT(i.discount_value, 2, 'de_DE'), ' por parcela') 
                             ELSE 'Sem desconto' 
-                            END as discount_info
-                            FROM installments WHERE 1=1";
+                            END as discount_info,
+                            CASE WHEN i.has_discount = 1 AND i.discount_value > 0 THEN 
+                                (i.discount_value * i.installment_count)
+                            ELSE 0 
+                            END as total_discount_potential
+                            FROM installments i
+                            LEFT JOIN customers c ON i.customer_id = c.id
+                            WHERE 1=1";
         $installmentParams = [];
         
         if (!$isMaster && $usuario['polo_id']) {
-            $installmentQuery .= " AND polo_id = ?";
+            $installmentQuery .= " AND i.polo_id = ?";
             $installmentParams[] = $usuario['polo_id'];
         }
         
-        $installmentQuery .= " ORDER BY created_at DESC LIMIT 10";
+        $installmentQuery .= " ORDER BY i.created_at DESC LIMIT 10";
         
         $installmentStmt = $db->getConnection()->prepare($installmentQuery);
         $installmentStmt->execute($installmentParams);
         $recentInstallments = $installmentStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // ===== LOG DE DEBUG PARA VERIFICAR DADOS =====
+        if (!empty($recentInstallments)) {
+            error_log("DEBUG: Mensalidade carregada - Cliente: " . ($recentInstallments[0]['customer_name'] ?? 'NULL') . 
+                     ", Desconto: " . ($recentInstallments[0]['has_discount'] ?? 'NULL') . 
+                     ", Valor desconto: " . ($recentInstallments[0]['discount_value'] ?? 'NULL'));
+        }
+        
     } catch (Exception $e) {
         $recentInstallments = [];
-        error_log("Tabela installments ainda não atualizada para desconto: " . $e->getMessage());
+        error_log("Erro ao carregar mensalidades com desconto: " . $e->getMessage());
+        
+        // ===== FALLBACK: Tentar sem campos de desconto =====
+        try {
+            error_log("Tentando fallback sem campos de desconto...");
+            $fallbackQuery = "SELECT i.*, 
+                              c.name as customer_name, 
+                              c.email as customer_email,
+                              'Sem desconto' as discount_info,
+                              0 as total_discount_potential
+                              FROM installments i
+                              LEFT JOIN customers c ON i.customer_id = c.id
+                              WHERE 1=1";
+            $fallbackParams = [];
+            
+            if (!$isMaster && $usuario['polo_id']) {
+                $fallbackQuery .= " AND i.polo_id = ?";
+                $fallbackParams[] = $usuario['polo_id'];
+            }
+            
+            $fallbackQuery .= " ORDER BY i.created_at DESC LIMIT 10";
+            
+            $fallbackStmt = $db->getConnection()->prepare($fallbackQuery);
+            $fallbackStmt->execute($fallbackParams);
+            $recentInstallments = $fallbackStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            error_log("Fallback executado com sucesso - " . count($recentInstallments) . " mensalidades carregadas");
+            
+        } catch (Exception $fallbackError) {
+            error_log("Erro no fallback: " . $fallbackError->getMessage());
+            $recentInstallments = [];
+        }
     }
     
     // Carregar pagamentos recentes (mantido)
@@ -1101,6 +1148,29 @@ function getStatusIcon($status) {
             opacity: 0.5;
             margin-bottom: 20px;
         }
+      
+              /* ===== CALCULADORA DE MENSALIDADE ===== */
+        .installment-calculator {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            border: 2px dashed #667eea;
+        }
+        
+        .calculator-result {
+            background: white;
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .value-display {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #667eea;
+        }
         
         /* NOVOS ESTILOS ESPECÍFICOS PARA DESCONTO */
         .discount-info-card {
@@ -1281,7 +1351,7 @@ function getStatusIcon($status) {
                                 </div>
                             </div>
                             <div class="col-md-3 mb-3">
-                                <div class="card card-installment">
+                                <div class="card card-stats" style="background: var(--installment-gradient);">
                                     <div class="card-body">
                                         <i class="bi bi-calendar-month"></i>
                                         <h3><?php echo count($recentInstallments); ?></h3>
@@ -1607,56 +1677,56 @@ function getStatusIcon($status) {
                                             </div>
                                         </div>
                                         
-                                        <!-- ===== CONFIGURAÇÃO DO PARCELAMENTO ===== -->
-                                        <div class="col-md-6">
-                                            <h6 class="border-bottom pb-2 mb-3 text-success">
-                                                <i class="bi bi-calculator me-1"></i>Parcelamento
-                                            </h6>
-                                            
-                                            <div class="installment-calculator">
-                                                <div class="row">
-                                                    <div class="col-md-6">
-                                                        <div class="mb-3">
-                                                            <label class="form-label">Valor da Parcela (R$) *</label>
-                                                            <input type="number" class="form-control" 
-                                                                   name="installment[installmentValue]" 
-                                                                   step="0.01" min="1" max="<?php echo MAX_INSTALLMENT_VALUE; ?>"
-                                                                   placeholder="100.00" 
-                                                                   required id="installment-value"
-                                                                   oninput="calculateInstallmentWithDiscount()">
-                                                        </div>
-                                                    </div>
-                                                    <div class="col-md-6">
-                                                        <div class="mb-3">
-                                                            <label class="form-label">Quantidade de Parcelas *</label>
-                                                            <select class="form-select" name="installment[installmentCount]" 
-                                                                    required id="installment-count"
-                                                                    onchange="calculateInstallmentWithDiscount()">
-                                                                <option value="">Selecione</option>
-                                                                <?php for($i = MIN_INSTALLMENTS; $i <= MAX_INSTALLMENTS; $i++): ?>
-                                                                <option value="<?php echo $i; ?>"><?php echo $i; ?>x</option>
-                                                                <?php endfor; ?>
-                                                            </select>
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                                
-                                                <div class="calculator-result" id="calculation-result" style="display: none;">
-                                                    <div class="row text-center">
-                                                        <div class="col-6">
-                                                            <div class="value-display" id="total-value">R$ 0,00</div>
-                                                            <small class="text-muted">Valor Total</small>
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <div class="value-display" id="installment-summary">0x R$ 0,00</div>
-                                                            <small class="text-muted">Parcelamento</small>
-                                                        </div>
-                                                    </div>
-                                                    <div class="mt-3" id="due-dates-preview"></div>
-                                                </div>
-                                            </div>
-                                        </div>
+                    <!-- ===== CONFIGURAÇÃO DO PARCELAMENTO ===== -->
+                    <div class="col-md-6">
+                        <h6 class="border-bottom pb-2 mb-3 text-success">
+                            <i class="bi bi-calculator me-1"></i>Parcelamento
+                        </h6>
+                        
+                        <div class="installment-calculator">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Valor da Parcela (R$) *</label>
+                                        <input type="number" class="form-control" 
+                                               name="installment[installmentValue]" 
+                                               step="0.01" min="1" 
+                                               placeholder="150.00" 
+                                               required id="installment-value"
+                                               oninput="calculateInstallmentWithDiscount()">
                                     </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="mb-3">
+                                        <label class="form-label">Quantidade de Parcelas *</label>
+                                        <select class="form-select" name="installment[installmentCount]" 
+                                                required id="installment-count"
+                                                onchange="calculateInstallmentWithDiscount()">
+                                            <option value="">Selecione</option>
+                                            <?php for($i = 2; $i <= 24; $i++): ?>
+                                            <option value="<?php echo $i; ?>"><?php echo $i; ?>x</option>
+                                            <?php endfor; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="calculator-result" id="calculation-result" style="display: none;">
+                                <div class="row text-center">
+                                    <div class="col-6">
+                                        <div class="value-display" id="total-value">R$ 0,00</div>
+                                        <small class="text-muted">Valor Total</small>
+                                    </div>
+                                    <div class="col-6">
+                                        <div class="value-display" id="installment-summary">0x R$ 0,00</div>
+                                        <small class="text-muted">Parcelamento</small>
+                                    </div>
+                                </div>
+                                <div class="mt-3" id="due-dates-preview"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                                     
                                     <!-- ===== NOVA SEÇÃO: CONFIGURAÇÃO DO DESCONTO ===== -->
                                     <div class="row mt-4">
@@ -1851,153 +1921,220 @@ function getStatusIcon($status) {
                         
                         <!-- ===== MENSALIDADES RECENTES COM INFORMAÇÕES DE DESCONTO ===== -->
                         <?php if (!empty($recentInstallments)): ?>
-                        <div class="card mt-4">
-                            <div class="card-header d-flex justify-content-between align-items-center">
-                                <h5><i class="bi bi-list me-2"></i>Mensalidades Cadastradas</h5>
-                                <div>
-                                    <?php if ($discountStats && $discountStats['installments_with_discount'] > 0): ?>
-                                    <span class="badge bg-success me-2">
-                                        💰 <?php echo $discountStats['installments_with_discount']; ?> com desconto
-                                    </span>
-                                    <?php endif; ?>
-                                    <span class="badge bg-primary"><?php echo count($recentInstallments); ?> total</span>
-                                </div>
-                            </div>
-                            <div class="card-body">
-                                <div class="table-responsive">
-                                    <table class="table table-hover">
-                                        <thead>
-                                            <tr>
-                                                <th>Cliente</th>
-                                                <th>Descrição</th>
-                                                <th>Parcelas</th>
-                                                <th>Valor Total</th>
-                                                <th>Desconto</th> <!-- NOVA COLUNA -->
-                                                <th>1º Vencimento</th>
-                                                <th>Status</th>
-                                                <th>Ações</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <?php foreach ($recentInstallments as $installment): ?>
-                                            <tr>
-                                                <td>
-                                                    <strong><?php echo htmlspecialchars($installment['customer_id'] ?? 'Cliente N/A'); ?></strong><br>
-                                                    <small class="text-muted">ID: <?php echo substr($installment['installment_id'], 0, 8); ?>...</small>
-                                                </td>
-                                                <td>
-                                                    <?php echo htmlspecialchars($installment['description']); ?><br>
-                                                    <small class="text-muted">
-                                                        <?php echo $installment['billing_type']; ?>
-                                                        <?php if ($installment['has_splits']): ?>
-                                                        • <?php echo $installment['splits_count']; ?> split(s)
-                                                        <?php endif; ?>
-                                                    </small>
-                                                </td>
-                                                <td>
-                                                    <span class="badge bg-primary"><?php echo $installment['installment_count']; ?>x</span><br>
-                                                    <small class="text-success">R$ <?php echo number_format($installment['installment_value'], 2, ',', '.'); ?></small>
-                                                </td>
-                                                <td>
-                                                    <strong class="text-success">
-                                                        R$ <?php echo number_format($installment['total_value'], 2, ',', '.'); ?>
-                                                    </strong>
-                                                </td>
-                                                <td>
-                                                    <!-- NOVA COLUNA: Informações de desconto -->
-                                                    <?php if (!empty($installment['has_discount']) && $installment['discount_value'] > 0): ?>
-                                                        <span class="badge bg-warning text-dark">
-                                                            💰 R$ <?php echo number_format($installment['discount_value'], 2, ',', '.'); ?>
-                                                        </span>
-                                                        <br>
-                                                        <small class="text-success">
-                                                            Economia: R$ <?php echo number_format($installment['discount_value'] * $installment['installment_count'], 2, ',', '.'); ?>
-                                                        </small>
-                                                    <?php else: ?>
-                                                        <small class="text-muted">Sem desconto</small>
-                                                    <?php endif; ?>
-                                                </td>
-                                                <td>
-                                                    <small><?php echo date('d/m/Y', strtotime($installment['first_due_date'])); ?></small>
-                                                </td>
-                                                <td>
-                                                    <span class="badge bg-info">Ativa</span>
-                                                </td>
-                                                <td>
-                                                    <div class="btn-group" role="group">
-                                                        <button class="btn btn-sm btn-outline-primary" 
-                                                                onclick="viewInstallmentWithDiscount('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Ver todas as parcelas">
-                                                            <i class="bi bi-eye"></i>
-                                                        </button>
-                                                        <?php if ($permissions['can_generate_payment_books']): ?>
-                                                        <button class="btn btn-sm btn-outline-success" 
-                                                                onclick="generatePaymentBook('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Gerar carnê PDF">
-                                                            <i class="bi bi-file-pdf"></i>
-                                                        </button>
-                                                        <?php endif; ?>
-                                                        
-                                                        <!-- NOVO: Botão para copiar informações com desconto -->
-                                                        <button class="btn btn-sm btn-outline-info" 
-                                                                onclick="copyInstallmentInfoWithDiscount('<?php echo $installment['installment_id']; ?>', <?php echo !empty($installment['has_discount']) ? 'true' : 'false'; ?>)" 
-                                                                data-bs-toggle="tooltip" title="Copiar informações">
-                                                            <i class="bi bi-clipboard"></i>
-                                                        </button>
-                                                        
-                                                        <!-- NOVO: Botão para duplicar mensalidade (com mesmo desconto) -->
-                                                        <?php if (!empty($installment['has_discount'])): ?>
-                                                        <button class="btn btn-sm btn-outline-warning" 
-                                                                onclick="duplicateInstallmentWithDiscount('<?php echo $installment['installment_id']; ?>')" 
-                                                                data-bs-toggle="tooltip" title="Duplicar mensalidade com mesmo desconto">
-                                                            <i class="bi bi-files"></i>
-                                                        </button>
-                                                        <?php endif; ?>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                            <?php endforeach; ?>
-                                        </tbody>
-                                    </table>
-                                </div>
+<div class="card mt-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5><i class="bi bi-list me-2"></i>Mensalidades Cadastradas</h5>
+        <div>
+            <?php 
+            // Contar mensalidades com desconto
+            $withDiscount = 0;
+            foreach ($recentInstallments as $inst) {
+                if ((!empty($inst['has_discount']) && $inst['discount_value'] > 0) || 
+                    (isset($inst['discount_info']) && $inst['discount_info'] !== 'Sem desconto')) {
+                    $withDiscount++;
+                }
+            }
+            ?>
+            <?php if ($withDiscount > 0): ?>
+            <span class="badge bg-success me-2">
+                💰 <?php echo $withDiscount; ?> com desconto
+            </span>
+            <?php endif; ?>
+            <span class="badge bg-primary"><?php echo count($recentInstallments); ?> total</span>
+        </div>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Cliente</th>
+                        <th>Descrição</th>
+                        <th>Parcelas</th>
+                        <th>Valor Total</th>
+                        <th>Desconto</th>
+                        <th>1º Vencimento</th>
+                        <th>Status</th>
+                        <th>Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($recentInstallments as $installment): ?>
+                    <tr>
+                        <td>
+                            <!-- ===== CORREÇÃO: MOSTRAR NOME DO CLIENTE ===== -->
+                            <strong>
+                                <?php 
+                                if (!empty($installment['customer_name'])) {
+                                    echo htmlspecialchars($installment['customer_name']); 
+                                } else {
+                                    echo 'Cliente: ' . htmlspecialchars($installment['customer_id'] ?? 'N/A');
+                                }
+                                ?>
+                            </strong><br>
+                            <small class="text-muted">
+                                <?php if (!empty($installment['customer_email'])): ?>
+                                    <?php echo htmlspecialchars($installment['customer_email']); ?>
+                                <?php else: ?>
+                                    ID: <?php echo substr($installment['installment_id'], 0, 8); ?>...
+                                <?php endif; ?>
+                            </small>
+                        </td>
+                        <td>
+                            <?php echo htmlspecialchars($installment['description']); ?><br>
+                            <small class="text-muted">
+                                <?php echo $installment['billing_type']; ?>
+                                <?php if ($installment['has_splits']): ?>
+                                • <?php echo $installment['splits_count']; ?> split(s)
+                                <?php endif; ?>
+                            </small>
+                        </td>
+                        <td>
+                            <span class="badge bg-primary"><?php echo $installment['installment_count']; ?>x</span><br>
+                            <small class="text-success">R$ <?php echo number_format($installment['installment_value'], 2, ',', '.'); ?></small>
+                        </td>
+                        <td>
+                            <strong class="text-success">
+                                R$ <?php echo number_format($installment['total_value'], 2, ',', '.'); ?>
+                            </strong>
+                        </td>
+                        <td>
+                            <!-- ===== CORREÇÃO: EXIBIR DESCONTO CORRETAMENTE ===== -->
+                            <?php 
+                            $hasDiscount = false;
+                            $discountValue = 0;
+                            $discountDisplay = 'Sem desconto';
+                            
+                            // Verificar múltiplas formas de desconto
+                            if (!empty($installment['has_discount']) && !empty($installment['discount_value']) && $installment['discount_value'] > 0) {
+                                $hasDiscount = true;
+                                $discountValue = floatval($installment['discount_value']);
+                                $discountDisplay = 'R$ ' . number_format($discountValue, 2, ',', '.');
+                            } elseif (!empty($installment['discount_info']) && $installment['discount_info'] !== 'Sem desconto') {
+                                $hasDiscount = true;
+                                $discountDisplay = $installment['discount_info'];
                                 
-                                <!-- NOVA: Seção de resumo de descontos na tabela -->
-                                <?php if ($discountStats && $discountStats['installments_with_discount'] > 0): ?>
-                                <div class="row mt-3 pt-3 border-top">
-                                    <div class="col-12">
-                                        <h6 class="text-muted mb-2">📊 Resumo de Descontos das Mensalidades</h6>
-                                        <div class="row text-center">
-                                            <div class="col-md-3">
-                                                <div class="badge bg-light text-dark p-2 w-100">
-                                                    <div class="fw-bold"><?php echo $discountStats['installments_with_discount']; ?>/<?php echo count($recentInstallments); ?></div>
-                                                    <small>Com desconto</small>
-                                                </div>
-                                            </div>
-                                            <div class="col-md-3">
-                                                <div class="badge bg-light text-dark p-2 w-100">
-                                                    <div class="fw-bold">R$ <?php echo number_format($discountStats['avg_discount_value'] ?? 0, 2, ',', '.'); ?></div>
-                                                    <small>Desconto médio</small>
-                                                </div>
-                                            </div>
-                                            <div class="col-md-3">
-                                                <div class="badge bg-light text-dark p-2 w-100">
-                                                    <div class="fw-bold">R$ <?php echo number_format($discountStats['total_discount_potential'], 0, ',', '.'); ?></div>
-                                                    <small>Economia total</small>
-                                                </div>
-                                            </div>
-                                            <div class="col-md-3">
-                                                <div class="badge bg-light text-dark p-2 w-100">
-                                                    <div class="fw-bold"><?php echo round($discountStats['discount_adoption_rate'], 1); ?>%</div>
-                                                    <small>Taxa de adoção</small>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                // Extrair valor do desconto da string se possível
+                                if (preg_match('/R\$ ([\d,\.]+)/', $installment['discount_info'], $matches)) {
+                                    $discountValue = floatval(str_replace(',', '.', str_replace('.', '', $matches[1])));
+                                }
+                            }
+                            ?>
+                            
+                            <?php if ($hasDiscount): ?>
+                                <span class="badge bg-warning text-dark">
+                                    💰 <?php echo $discountDisplay; ?>
+                                </span>
+                                <br>
+                                <?php if ($discountValue > 0): ?>
+                                <small class="text-success">
+                                    Economia: R$ <?php echo number_format($discountValue * $installment['installment_count'], 2, ',', '.'); ?>
+                                </small>
+                                <?php endif; ?>
+                            <?php else: ?>
+                                <small class="text-muted">Sem desconto</small>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <small><?php echo date('d/m/Y', strtotime($installment['first_due_date'])); ?></small>
+                        </td>
+                        <td>
+                            <span class="badge bg-info">Ativa</span>
+                        </td>
+                        <td>
+                            <div class="btn-group" role="group">
+                                <button class="btn btn-sm btn-outline-primary" 
+                                        onclick="viewInstallmentWithDiscount('<?php echo $installment['installment_id']; ?>')" 
+                                        data-bs-toggle="tooltip" title="Ver todas as parcelas">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <?php if ($permissions['can_generate_payment_books']): ?>
+                                <button class="btn btn-sm btn-outline-success" 
+                                        onclick="generatePaymentBook('<?php echo $installment['installment_id']; ?>')" 
+                                        data-bs-toggle="tooltip" title="Gerar carnê PDF">
+                                    <i class="bi bi-file-pdf"></i>
+                                </button>
+                                <?php endif; ?>
+                                
+                                <button class="btn btn-sm btn-outline-info" 
+                                        onclick="copyInstallmentInfoWithDiscount('<?php echo $installment['installment_id']; ?>', <?php echo $hasDiscount ? 'true' : 'false'; ?>)" 
+                                        data-bs-toggle="tooltip" title="Copiar informações">
+                                    <i class="bi bi-clipboard"></i>
+                                </button>
+                                
+                                <?php if ($hasDiscount): ?>
+                                <button class="btn btn-sm btn-outline-warning" 
+                                        onclick="duplicateInstallmentWithDiscount('<?php echo $installment['installment_id']; ?>')" 
+                                        data-bs-toggle="tooltip" title="Duplicar mensalidade com mesmo desconto">
+                                    <i class="bi bi-files"></i>
+                                </button>
                                 <?php endif; ?>
                             </div>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+                                
+        <!-- ===== SEÇÃO DE RESUMO ATUALIZADA ===== -->
+        <?php 
+        $totalWithDiscount = 0;
+        $totalDiscountValue = 0;
+        foreach ($recentInstallments as $inst) {
+            if ((!empty($inst['has_discount']) && $inst['discount_value'] > 0) || 
+                (isset($inst['discount_info']) && $inst['discount_info'] !== 'Sem desconto')) {
+                $totalWithDiscount++;
+                if (!empty($inst['discount_value'])) {
+                    $totalDiscountValue += $inst['discount_value'] * $inst['installment_count'];
+                } elseif (!empty($inst['total_discount_potential'])) {
+                    $totalDiscountValue += $inst['total_discount_potential'];
+                }
+            }
+        }
+        ?>
+        
+        <?php if ($totalWithDiscount > 0): ?>
+        <div class="row mt-3 pt-3 border-top">
+            <div class="col-12">
+                <h6 class="text-muted mb-2">📊 Resumo de Descontos das Mensalidades Exibidas</h6>
+                <div class="row text-center">
+                    <div class="col-md-3">
+                        <div class="badge bg-light text-dark p-2 w-100">
+                            <div class="fw-bold"><?php echo $totalWithDiscount; ?>/<?php echo count($recentInstallments); ?></div>
+                            <small>Com desconto</small>
                         </div>
-                        <?php endif; ?>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="badge bg-light text-dark p-2 w-100">
+                            <div class="fw-bold">
+                                <?php 
+                                $avgDiscount = $totalWithDiscount > 0 ? ($totalDiscountValue / $totalWithDiscount) : 0;
+                                echo 'R$ ' . number_format($avgDiscount, 2, ',', '.');
+                                ?>
+                            </div>
+                            <small>Desconto médio total</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="badge bg-light text-dark p-2 w-100">
+                            <div class="fw-bold">R$ <?php echo number_format($totalDiscountValue, 0, ',', '.'); ?></div>
+                            <small>Economia total</small>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="badge bg-light text-dark p-2 w-100">
+                            <div class="fw-bold"><?php echo round(($totalWithDiscount / count($recentInstallments)) * 100, 1); ?>%</div>
+                            <small>Taxa de adoção</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endif; ?>
+    </div>
+</div>
+<?php endif; ?>
                     </div>
                     <?php endif; ?>
 
