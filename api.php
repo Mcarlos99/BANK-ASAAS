@@ -58,7 +58,7 @@ try {
 
 
 
-        case 'create-installment-with-discount':
+        case 'create_installment_with_discount':
             try {
                 error_log("=== INÍCIO MENSALIDADE COM DESCONTO ===");
                 
@@ -67,47 +67,51 @@ try {
                 $asaas = $dynamicAsaas->getInstance();
                 
                 // Dados básicos
-        // Garantir que os dados de parcelamento estão corretos
-        $installmentData = [
-            'installmentCount' => (int)($_POST['installment_count'] ?? 0),
-            'installmentValue' => (float)($_POST['installment_value'] ?? 0),
-            'description_suffix' => $_POST['description_suffix'] ?? null
-        ];
+                $paymentData = [
+                    'customer' => $_POST['payment']['customer'] ?? '',
+                    'billingType' => $_POST['payment']['billingType'] ?? 'BOLETO',
+                    'dueDate' => $_POST['payment']['dueDate'] ?? '',
+                    'description' => $_POST['payment']['description'] ?? ''
+                ];
+                
+                // Garantir que os dados de parcelamento estão corretos
+                $installmentData = [
+                    'installmentCount' => (int)($_POST['installment']['installmentCount'] ?? 0),
+                    'installmentValue' => (float)($_POST['installment']['installmentValue'] ?? 0),
+                    'description_suffix' => $_POST['installment']['description_suffix'] ?? null
+                ];
                 
                 error_log("Dados iniciais - Payment: " . json_encode($paymentData));
                 error_log("Dados iniciais - Installment: " . json_encode($installmentData));
                 
-
-        // ===== PROCESSAR DESCONTO =====
-        $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
-        if ($discountEnabled) {
-            $discountValue = floatval($_POST['discount_value'] ?? 0);
-            if ($discountValue > 0) {
-                // Validar desconto
-                $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
-                if ($discountValue >= $installmentValue) {
-                    jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
-                }
-                
-                $maxDiscountPercentage = defined('MAX_DISCOUNT_PERCENTAGE') ? MAX_DISCOUNT_PERCENTAGE : 50;
-                $maxDiscountValue = $installmentValue * ($maxDiscountPercentage / 100);
-                
-                if ($discountValue > $maxDiscountValue) {
-                    jsonResponse(false, null, "Desconto máximo permitido: R$ " . number_format($maxDiscountValue, 2, ',', '.') . " ({$maxDiscountPercentage}% da parcela)");
-                }
-                
-                // Adicionar desconto ao paymentData
-                $paymentData['discount'] = [
-                    'value' => $discountValue,
-                    'dueDateLimitDays' => 0,
-                    'type' => 'FIXED'
-                ];
-                
-                // Adicionar referência no installmentData
-                $installmentData['discount_value'] = $discountValue;
-                $installmentData['discount_type'] = 'FIXED';
-            
-        
+                // ===== PROCESSAR DESCONTO =====
+                $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
+                if ($discountEnabled) {
+                    $discountValue = floatval($_POST['discount_value'] ?? 0);
+                    if ($discountValue > 0) {
+                        // Validar desconto
+                        $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+                        if ($discountValue >= $installmentValue) {
+                            jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
+                        }
+                        
+                        $maxDiscountPercentage = defined('MAX_DISCOUNT_PERCENTAGE') ? MAX_DISCOUNT_PERCENTAGE : 50;
+                        $maxDiscountValue = $installmentValue * ($maxDiscountPercentage / 100);
+                        
+                        if ($discountValue > $maxDiscountValue) {
+                            jsonResponse(false, null, "Desconto máximo permitido: R$ " . number_format($maxDiscountValue, 2, ',', '.') . " ({$maxDiscountPercentage}% da parcela)");
+                        }
+                        
+                        // Adicionar desconto ao paymentData
+                        $paymentData['discount'] = [
+                            'value' => $discountValue,
+                            'dueDateLimitDays' => 0,
+                            'type' => 'FIXED'
+                        ];
+                        
+                        // Adicionar referência no installmentData
+                        $installmentData['discount_value'] = $discountValue;
+                        $installmentData['discount_type'] = 'FIXED';
                         
                         error_log("✅ DESCONTO ADICIONADO! PaymentData: " . json_encode($paymentData['discount']));
                         error_log("✅ DESCONTO ADICIONADO! InstallmentData: discount_value = {$discountValue}");
@@ -160,7 +164,7 @@ try {
                 
                 error_log("Splits preparados: " . json_encode($splits));
                 
-                // ===== CHAMAR INSTALLMENT MANAGER COM DADOS CORRETOS =====
+                // ===== USAR INSTALLMENT MANAGER EM VEZ DE CHAMAR ASAAS DIRETAMENTE =====
                 error_log("Chamando InstallmentManager com PaymentData: " . json_encode($paymentData));
                 error_log("Splits: " . json_encode($splits));
                 error_log("InstallmentData: " . json_encode($installmentData));
@@ -170,8 +174,51 @@ try {
                 
                 error_log("Resultado do InstallmentManager: " . json_encode($result));
                 
-                // Salvar no banco
-                $db = DatabaseManager::getInstance();
+                // ===== CORREÇÃO ADICIONAL: FORÇAR SALVAMENTO DE DESCONTO SE NÃO SALVOU =====
+                if ($discountEnabled && $discountValue > 0) {
+                    try {
+                        $db = DatabaseManager::getInstance();
+                        
+                        // Verificar se o desconto foi salvo
+                        $check = $db->getConnection()->prepare("
+                            SELECT has_discount, discount_value 
+                            FROM installments 
+                            WHERE installment_id = ?
+                        ");
+                        $check->execute([$result['installment_id']]);
+                        $saved = $check->fetch();
+                        
+                        if (!$saved || !$saved['has_discount'] || $saved['discount_value'] <= 0) {
+                            error_log("⚠️ DESCONTO NÃO FOI SALVO AUTOMATICAMENTE - FORÇANDO SALVAMENTO");
+                            
+                            // Forçar update do desconto
+                            $update = $db->getConnection()->prepare("
+                                UPDATE installments 
+                                SET has_discount = 1, 
+                                    discount_value = ?, 
+                                    discount_type = 'FIXED',
+                                    discount_description = 'Desconto até vencimento - corrigido via API'
+                                WHERE installment_id = ?
+                            ");
+                            
+                            if ($update->execute([$discountValue, $result['installment_id']])) {
+                                error_log("✅ DESCONTO FORÇADO COM SUCESSO!");
+                                
+                                // Verificar novamente
+                                $check->execute([$result['installment_id']]);
+                                $verified = $check->fetch();
+                                error_log("✅ VERIFICAÇÃO: has_discount=" . ($verified['has_discount'] ?? 'NULL') . ", discount_value=" . ($verified['discount_value'] ?? 'NULL'));
+                            } else {
+                                error_log("❌ ERRO AO FORÇAR DESCONTO");
+                            }
+                        } else {
+                            error_log("✅ DESCONTO JÁ ESTAVA SALVO CORRETAMENTE");
+                        }
+                        
+                    } catch (Exception $e) {
+                        error_log("❌ ERRO AO VERIFICAR/FORÇAR DESCONTO: " . $e->getMessage());
+                    }
+                }
                 
                 // Verificar se resultado tem a estrutura esperada
                 if (!$result || !isset($result['success']) || !$result['success']) {
@@ -180,6 +227,7 @@ try {
                 
                 // Salvar dados adicionais se necessário
                 if (isset($result['api_response'])) {
+                    $db = DatabaseManager::getInstance();
                     $paymentSaveData = array_merge($result['api_response'], ['polo_id' => $usuario['polo_id']]);
                     $db->savePayment($paymentSaveData);
                     
@@ -214,6 +262,7 @@ try {
                 error_log("Stack trace: " . $e->getTraceAsString());
                 jsonResponse(false, null, $e->getMessage());
             }
+            break;
                 case 'discount-performance-report':
                     try {
                         $startDate = $_GET['start'] ?? date('Y-m-01');

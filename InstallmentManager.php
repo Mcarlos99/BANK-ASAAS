@@ -82,280 +82,273 @@ class InstallmentManager {
      * ===== MÉTODO PRINCIPAL: CRIAR MENSALIDADE COM DESCONTO =====
      * Criar nova mensalidade parcelada completa COM DESCONTO
      */
-/**
- * ===== MÉTODO PRINCIPAL: CRIAR MENSALIDADE COM DESCONTO =====
- * Criar nova mensalidade parcelada completa COM DESCONTO
- */
-public function createInstallment($paymentData, $splitsData = [], $installmentData = []) {
-    try {
-        // ===== DEBUG DETALHADO =====
-        $this->log("=== INÍCIO DEBUG INSTALLMENT MANAGER ===");
-        $this->log("PaymentData recebido: " . json_encode($paymentData));
-        $this->log("SplitsData recebido: " . json_encode($splitsData));
-        $this->log("InstallmentData recebido: " . json_encode($installmentData));
-        
-        // Verificar se desconto está nos dados
-        if (isset($paymentData['discount'])) {
-            $this->log("✅ DESCONTO ENCONTRADO no paymentData: " . json_encode($paymentData['discount']));
-        } else {
-            $this->log("❌ DESCONTO NÃO ENCONTRADO no paymentData");
-        }
-        
-        $this->log("Iniciando criação de mensalidade COM DESCONTO - Cliente: {$paymentData['customer']}, Parcelas: {$installmentData['installmentCount']}");
-        
-        // Validar dados de entrada
-        $this->validateInstallmentData($installmentData);
-        $this->validatePaymentData($paymentData);
-        
-        if (!empty($splitsData)) {
-            $this->validateSplitsData($splitsData, $installmentData['installmentValue']);
-        }
-        
-        // ===== VALIDAÇÃO E CONFIGURAÇÃO DO DESCONTO =====
-        $discountData = [];
-        if (!empty($installmentData['discount_value']) && $installmentData['discount_value'] > 0) {
-            $discountData = $this->validateAndPrepareDiscount($installmentData);
-            $this->log("Desconto configurado via installmentData: R$ {$discountData['value']} até o vencimento");
+    public function createInstallment($paymentData, $splitsData = [], $installmentData = []) {
+        try {
+            // ===== DEBUG DETALHADO =====
+            $this->log("=== INÍCIO DEBUG INSTALLMENT MANAGER ===");
+            $this->log("PaymentData recebido: " . json_encode($paymentData));
+            $this->log("SplitsData recebido: " . json_encode($splitsData));
+            $this->log("InstallmentData recebido: " . json_encode($installmentData));
             
-            // ===== CORREÇÃO PRINCIPAL: ADICIONAR DESCONTO AO PAYMENTDATA =====
-            $paymentData['discount'] = [
-                'value' => $discountData['value'],
-                'dueDateLimitDays' => 0,  // Válido até o vencimento
-                'type' => 'FIXED'
+            // Verificar se desconto está nos dados
+            if (isset($paymentData['discount'])) {
+                $this->log("✅ DESCONTO ENCONTRADO no paymentData: " . json_encode($paymentData['discount']));
+            } else {
+                $this->log("❌ DESCONTO NÃO ENCONTRADO no paymentData");
+            }
+            
+            $this->log("Iniciando criação de mensalidade COM DESCONTO - Cliente: {$paymentData['customer']}, Parcelas: {$installmentData['installmentCount']}");
+            
+            // Validar dados de entrada
+            $this->validateInstallmentData($installmentData);
+            $this->validatePaymentData($paymentData);
+            
+            if (!empty($splitsData)) {
+                $this->validateSplitsData($splitsData, $installmentData['installmentValue']);
+            }
+            
+            // ===== VALIDAÇÃO E CONFIGURAÇÃO DO DESCONTO =====
+            $discountData = [];
+            if (!empty($installmentData['discount_value']) && $installmentData['discount_value'] > 0) {
+                $discountData = $this->validateAndPrepareDiscount($installmentData);
+                $this->log("Desconto configurado via installmentData: R$ {$discountData['value']} até o vencimento");
+                
+                // ===== CORREÇÃO PRINCIPAL: ADICIONAR DESCONTO AO PAYMENTDATA =====
+                $paymentData['discount'] = [
+                    'value' => $discountData['value'],
+                    'dueDateLimitDays' => 0,  // Válido até o vencimento
+                    'type' => 'FIXED'
+                ];
+                
+                $this->log("✅ DESCONTO ADICIONADO AO PAYMENTDATA: " . json_encode($paymentData['discount']));
+            }
+            
+            // ===== VERIFICAR SE DESCONTO JÁ ESTÁ NO PAYMENTDATA (vindo da interface) =====
+            if (isset($paymentData['discount']) && $paymentData['discount']['value'] > 0) {
+                $this->log("Desconto já configurado no paymentData: R$ {$paymentData['discount']['value']}");
+            } else {
+                $this->log("❌ NENHUM DESCONTO CONFIGURADO");
+            }
+            
+            // Inicializar ASAAS
+            $asaas = $this->initAsaas();
+            
+            // ===== LOG ANTES DE CHAMAR ASAAS =====
+            $this->log("Chamando ASAAS com PaymentData FINAL: " . json_encode($paymentData));
+            $this->log("Splits: " . json_encode($splitsData));
+            $this->log("InstallmentData: " . json_encode($installmentData));
+            
+            // Criar parcelamento via API ASAAS
+            $this->log("Enviando para API ASAAS...");
+            $apiResult = $asaas->createInstallmentPaymentWithSplit($paymentData, $splitsData, $installmentData);
+            
+            // ===== LOG DA RESPOSTA =====
+            $this->log("Resposta da API ASAAS: " . json_encode($apiResult));
+            
+            if (!$apiResult || empty($apiResult['installment'])) {
+                throw new Exception('Resposta inválida da API ASAAS');
+            }
+            
+            $this->log("Parcelamento criado na API ASAAS - ID: {$apiResult['installment']}");
+            
+            // ===== VERIFICAR DESCONTO NA RESPOSTA =====
+            if (isset($apiResult['discount']) && $apiResult['discount']['value'] > 0) {
+                $this->log("✅ DESCONTO APLICADO COM SUCESSO na API: R$ {$apiResult['discount']['value']}");
+            } else {
+                $this->log("❌ DESCONTO NÃO APLICADO - Resposta discount: " . json_encode($apiResult['discount'] ?? 'AUSENTE'));
+            }
+            
+// Preparar dados para salvar no banco local COM DESCONTO - VERSÃO CORRIGIDA
+$installmentRecord = [
+    'installment_id' => $apiResult['installment'],
+    'polo_id' => $this->auth->getUsuarioAtual()['polo_id'] ?? null,
+    'customer_id' => $apiResult['customer'],
+    'installment_count' => $installmentData['installmentCount'],
+    'installment_value' => $installmentData['installmentValue'],
+    'total_value' => $installmentData['installmentCount'] * $installmentData['installmentValue'],
+    'first_due_date' => $paymentData['dueDate'],
+    'billing_type' => $paymentData['billingType'],
+    'description' => $paymentData['description'],
+    'has_splits' => !empty($splitsData),
+    'splits_count' => count($splitsData),
+    'created_by' => $this->auth->getUsuarioAtual()['id'] ?? null,
+    'first_payment_id' => $apiResult['id'],
+    'status' => 'ACTIVE',
+    
+    // ===== CORREÇÃO: VERIFICAR MÚLTIPLAS FONTES DE DESCONTO =====
+    'has_discount' => 0,
+    'discount_value' => null,
+    'discount_type' => null,
+    'discount_deadline_type' => 'DUE_DATE',
+    'discount_description' => null
+];
+
+// ===== DETECTAR DESCONTO DE MÚLTIPLAS FONTES =====
+$discountDetected = false;
+$discountValue = 0;
+
+// 1. Verificar no paymentData (prioridade)
+if (isset($paymentData['discount']) && 
+    is_array($paymentData['discount']) && 
+    !empty($paymentData['discount']['value']) && 
+    $paymentData['discount']['value'] > 0) {
+    
+    $discountDetected = true;
+    $discountValue = floatval($paymentData['discount']['value']);
+    $installmentRecord['has_discount'] = 1;
+    $installmentRecord['discount_value'] = $discountValue;
+    $installmentRecord['discount_type'] = $paymentData['discount']['type'] ?? 'FIXED';
+    $installmentRecord['discount_description'] = 'Desconto até vencimento - via paymentData';
+    
+    $this->log("✅ DESCONTO DETECTADO no paymentData: R$ {$discountValue}");
+}
+
+// 2. Verificar no installmentData (fallback)
+elseif (!empty($installmentData['discount_value']) && $installmentData['discount_value'] > 0) {
+    $discountDetected = true;
+    $discountValue = floatval($installmentData['discount_value']);
+    $installmentRecord['has_discount'] = 1;
+    $installmentRecord['discount_value'] = $discountValue;
+    $installmentRecord['discount_type'] = $installmentData['discount_type'] ?? 'FIXED';
+    $installmentRecord['discount_description'] = 'Desconto até vencimento - via installmentData';
+    
+    $this->log("✅ DESCONTO DETECTADO no installmentData: R$ {$discountValue}");
+}
+
+// 3. Verificar se veio da interface (POST)
+elseif (!empty($_POST['discount_enabled']) && 
+         $_POST['discount_enabled'] === '1' && 
+         !empty($_POST['discount_value']) && 
+         floatval($_POST['discount_value']) > 0) {
+    
+    $discountDetected = true;
+    $discountValue = floatval($_POST['discount_value']);
+    $installmentRecord['has_discount'] = 1;
+    $installmentRecord['discount_value'] = $discountValue;
+    $installmentRecord['discount_type'] = 'FIXED';
+    $installmentRecord['discount_description'] = 'Desconto até vencimento - via POST';
+    
+    $this->log("✅ DESCONTO DETECTADO via POST: R$ {$discountValue}");
+}
+
+// 4. Verificar se o desconto está na resposta da API ASAAS
+elseif (isset($apiResult['discount']) && 
+        !empty($apiResult['discount']['value']) && 
+        $apiResult['discount']['value'] > 0) {
+    
+    $discountDetected = true;
+    $discountValue = floatval($apiResult['discount']['value']);
+    $installmentRecord['has_discount'] = 1;
+    $installmentRecord['discount_value'] = $discountValue;
+    $installmentRecord['discount_type'] = $apiResult['discount']['type'] ?? 'FIXED';
+    $installmentRecord['discount_description'] = 'Desconto até vencimento - resposta API';
+    
+    $this->log("✅ DESCONTO DETECTADO na resposta API: R$ {$discountValue}");
+}
+
+// Log final do status do desconto
+if ($discountDetected) {
+    $this->log("✅ DESCONTO SERÁ SALVO NO BANCO: has_discount=1, discount_value={$discountValue}");
+    
+    // Adicionar ao summary da resposta
+    if (!isset($response['summary'])) {
+        $response['summary'] = [];
+    }
+    $response['summary']['has_discount'] = true;
+    $response['summary']['discount_value'] = $discountValue;
+    $response['summary']['total_discount_potential'] = $discountValue * $installmentData['installmentCount'];
+} else {
+    $this->log("⚠️ NENHUM DESCONTO DETECTADO - será salvo como has_discount=0");
+}
+
+// ===== LOG DE DEBUG COMPLETO =====
+$this->log("DEBUG: Dados completos do installmentRecord para salvar:");
+$this->log(json_encode($installmentRecord, JSON_UNESCAPED_UNICODE));
+
+// ===== ADICIONAR VALIDAÇÃO ANTES DE SALVAR =====
+if (empty($installmentRecord['installment_id'])) {
+    throw new Exception('installment_id está vazio - não é possível salvar');
+}
+
+if (empty($installmentRecord['customer_id'])) {
+    throw new Exception('customer_id está vazio - não é possível salvar');
+}
+
+$this->log("Tentando salvar installmentRecord no banco de dados...");
+
+// Salvar registro principal da mensalidade
+$recordId = $this->db->saveInstallmentRecord($installmentRecord);
+
+if ($recordId) {
+    $this->log("✅ InstallmentRecord salvo com sucesso - ID local: {$recordId}");
+    
+    // Verificar se foi salvo corretamente
+    $verificacao = $this->db->getInstallmentInfo($installmentRecord['installment_id']);
+    if ($verificacao) {
+        $this->log("✅ VERIFICAÇÃO: Mensalidade encontrada no banco - has_discount: " . ($verificacao['has_discount'] ?? 'NULL'));
+        $this->log("✅ VERIFICAÇÃO: discount_value: " . ($verificacao['discount_value'] ?? 'NULL'));
+    } else {
+        $this->log("❌ ERRO: Mensalidade não encontrada no banco após salvar!");
+    }
+} else {
+    $this->log("❌ ERRO: Falha ao salvar installmentRecord!");
+    throw new Exception('Falha ao salvar dados da mensalidade no banco');
+}
+
+$this->log("InstallmentRecord preparado: " . json_encode($installmentRecord));
+            
+            // Salvar registro principal da mensalidade
+            $recordId = $this->db->saveInstallmentRecord($installmentRecord);
+            $this->log("Registro de mensalidade salvo - ID local: {$recordId}");
+            
+            // Salvar primeiro pagamento no banco
+            $paymentSaveData = array_merge($apiResult, [
+                'polo_id' => $installmentRecord['polo_id']
+            ]);
+            $this->db->savePayment($paymentSaveData);
+            
+            // Salvar splits se houver
+            if (!empty($splitsData)) {
+                $this->db->savePaymentSplits($apiResult['id'], $splitsData);
+                $this->log("Splits salvos para o pagamento: " . count($splitsData) . " destinatários");
+            }
+            
+            // Buscar e salvar todas as parcelas criadas
+            $this->syncInstallmentPayments($apiResult['installment']);
+            
+            // Preparar resposta completa
+            $response = [
+                'success' => true,
+                'installment_id' => $apiResult['installment'],
+                'first_payment_id' => $apiResult['id'],
+                'installment_record' => $installmentRecord,
+                'api_response' => $apiResult,
+                'local_record_id' => $recordId,
+                'summary' => [
+                    'total_installments' => $installmentData['installmentCount'],
+                    'installment_value' => $installmentData['installmentValue'],
+                    'total_value' => $installmentRecord['total_value'],
+                    'first_due_date' => $paymentData['dueDate'],
+                    'billing_type' => $paymentData['billingType'],
+                    'splits_configured' => count($splitsData),
+                    'has_discount' => isset($paymentData['discount']) && $paymentData['discount']['value'] > 0,
+                    'discount_value' => isset($paymentData['discount']) ? $paymentData['discount']['value'] : 0,
+                    'discount_per_installment' => isset($paymentData['discount']) ? $paymentData['discount']['value'] : 0,
+                    'total_discount_potential' => isset($paymentData['discount']) ? $paymentData['discount']['value'] * $installmentData['installmentCount'] : 0,
+                    'discount_deadline' => 'Até o dia do vencimento de cada parcela'
+                ]
             ];
             
-            $this->log("✅ DESCONTO ADICIONADO AO PAYMENTDATA: " . json_encode($paymentData['discount']));
-        }
-        
-        // ===== VERIFICAR SE DESCONTO JÁ ESTÁ NO PAYMENTDATA (vindo da interface) =====
-        if (isset($paymentData['discount']) && $paymentData['discount']['value'] > 0) {
-            $this->log("Desconto já configurado no paymentData: R$ {$paymentData['discount']['value']}");
-        } else {
-            $this->log("❌ NENHUM DESCONTO CONFIGURADO");
-        }
-        
-        // Inicializar ASAAS
-        $asaas = $this->initAsaas();
-        
-        // ===== LOG ANTES DE CHAMAR ASAAS =====
-        $this->log("Chamando ASAAS com PaymentData FINAL: " . json_encode($paymentData));
-        $this->log("Splits: " . json_encode($splitsData));
-        $this->log("InstallmentData: " . json_encode($installmentData));
-        
-        // Criar parcelamento via API ASAAS
-        $this->log("Enviando para API ASAAS...");
-        $apiResult = $asaas->createInstallmentPaymentWithSplit($paymentData, $splitsData, $installmentData);
-        
-        // ===== LOG DA RESPOSTA =====
-        $this->log("Resposta da API ASAAS: " . json_encode($apiResult));
-        
-        if (!$apiResult || empty($apiResult['installment'])) {
-            throw new Exception('Resposta inválida da API ASAAS');
-        }
-        
-        $this->log("Parcelamento criado na API ASAAS - ID: {$apiResult['installment']}");
-        
-        // ===== VERIFICAR DESCONTO NA RESPOSTA =====
-        if (isset($apiResult['discount']) && $apiResult['discount']['value'] > 0) {
-            $this->log("✅ DESCONTO APLICADO COM SUCESSO na API: R$ {$apiResult['discount']['value']}");
-        } else {
-            $this->log("❌ DESCONTO NÃO APLICADO - Resposta discount: " . json_encode($apiResult['discount'] ?? 'AUSENTE'));
-        }
-        
-        // ===== PREPARAR DADOS PARA SALVAR NO BANCO LOCAL COM DESCONTO - VERSÃO CORRIGIDA =====
-        $installmentRecord = [
-            'installment_id' => $apiResult['installment'],
-            'polo_id' => $this->auth->getUsuarioAtual()['polo_id'] ?? null,
-            'customer_id' => $apiResult['customer'],
-            'installment_count' => $installmentData['installmentCount'],
-            'installment_value' => $installmentData['installmentValue'],
-            'total_value' => $installmentData['installmentCount'] * $installmentData['installmentValue'],
-            'first_due_date' => $paymentData['dueDate'],
-            'billing_type' => $paymentData['billingType'],
-            'description' => $paymentData['description'],
-            'has_splits' => !empty($splitsData),
-            'splits_count' => count($splitsData),
-            'created_by' => $this->auth->getUsuarioAtual()['id'] ?? null,
-            'first_payment_id' => $apiResult['id'],
-            'status' => 'ACTIVE',
+            $this->log("=== FIM DEBUG INSTALLMENT MANAGER ===");
+            $this->log("Mensalidade criada com sucesso - Desconto aplicado: " . (isset($paymentData['discount']) ? 'SIM' : 'NÃO'));
             
-            // ===== INICIALIZAR CAMPOS DE DESCONTO =====
-            'has_discount' => 0,
-            'discount_value' => null,
-            'discount_type' => null,
-            'discount_deadline_type' => 'DUE_DATE',
-            'discount_description' => null
-        ];
-
-        // ===== DETECTAR DESCONTO DE MÚLTIPLAS FONTES - VERSÃO CORRIGIDA =====
-        $discountDetected = false;
-        $discountValue = 0;
-
-        $this->log("=== INÍCIO DETECÇÃO DE DESCONTO PARA BANCO ===");
-
-        // 1. Verificar no paymentData (prioridade máxima)
-        if (isset($paymentData['discount']) && 
-            is_array($paymentData['discount']) && 
-            isset($paymentData['discount']['value']) && 
-            $paymentData['discount']['value'] > 0) {
+            return $response;
             
-            $discountDetected = true;
-            $discountValue = floatval($paymentData['discount']['value']);
-            $installmentRecord['has_discount'] = 1;
-            $installmentRecord['discount_value'] = $discountValue;
-            $installmentRecord['discount_type'] = $paymentData['discount']['type'] ?? 'FIXED';
-            $installmentRecord['discount_description'] = 'Desconto até vencimento - via paymentData';
-            
-            $this->log("✅ DESCONTO DETECTADO no paymentData: R$ {$discountValue}");
+        } catch (Exception $e) {
+            $this->log("Erro ao criar mensalidade: " . $e->getMessage(), 'ERROR');
+            throw new Exception('Erro ao criar mensalidade: ' . $e->getMessage());
         }
-
-        // 2. Verificar no installmentData (segunda prioridade)
-        elseif (isset($installmentData['discount_value']) && 
-                !empty($installmentData['discount_value']) && 
-                $installmentData['discount_value'] > 0) {
-            
-            $discountDetected = true;
-            $discountValue = floatval($installmentData['discount_value']);
-            $installmentRecord['has_discount'] = 1;
-            $installmentRecord['discount_value'] = $discountValue;
-            $installmentRecord['discount_type'] = $installmentData['discount_type'] ?? 'FIXED';
-            $installmentRecord['discount_description'] = 'Desconto até vencimento - via installmentData';
-            
-            $this->log("✅ DESCONTO DETECTADO no installmentData: R$ {$discountValue}");
-        }
-
-        // 3. Verificar se veio da interface via POST (terceira prioridade)
-        elseif (isset($_POST['discount_enabled']) && 
-                $_POST['discount_enabled'] === '1' && 
-                isset($_POST['discount_value']) && 
-                !empty($_POST['discount_value']) && 
-                floatval($_POST['discount_value']) > 0) {
-            
-            $discountDetected = true;
-            $discountValue = floatval($_POST['discount_value']);
-            $installmentRecord['has_discount'] = 1;
-            $installmentRecord['discount_value'] = $discountValue;
-            $installmentRecord['discount_type'] = 'FIXED';
-            $installmentRecord['discount_description'] = 'Desconto até vencimento - via POST';
-            
-            $this->log("✅ DESCONTO DETECTADO via POST: R$ {$discountValue}");
-        }
-
-        // 4. Verificar se o desconto está na resposta da API ASAAS (última opção)
-        elseif (isset($apiResult['discount']) && 
-                !empty($apiResult['discount']['value']) && 
-                $apiResult['discount']['value'] > 0) {
-            
-            $discountDetected = true;
-            $discountValue = floatval($apiResult['discount']['value']);
-            $installmentRecord['has_discount'] = 1;
-            $installmentRecord['discount_value'] = $discountValue;
-            $installmentRecord['discount_type'] = $apiResult['discount']['type'] ?? 'FIXED';
-            $installmentRecord['discount_description'] = 'Desconto até vencimento - resposta API';
-            
-            $this->log("✅ DESCONTO DETECTADO na resposta API: R$ {$discountValue}");
-        }
-
-        // ===== LOG FINAL DE DEBUG =====
-        if ($discountDetected) {
-            $this->log("✅ DESCONTO SERÁ SALVO NO BANCO:");
-            $this->log("   - has_discount: 1");
-            $this->log("   - discount_value: {$discountValue}");
-            $this->log("   - discount_type: " . $installmentRecord['discount_type']);
-            $this->log("   - total_discount_potential: " . ($discountValue * $installmentData['installmentCount']));
-        } else {
-            $this->log("⚠️ NENHUM DESCONTO DETECTADO - Verificar:");
-            $this->log("   - paymentData['discount']: " . json_encode($paymentData['discount'] ?? 'AUSENTE'));
-            $this->log("   - installmentData['discount_value']: " . ($installmentData['discount_value'] ?? 'AUSENTE'));
-            $this->log("   - _POST['discount_enabled']: " . ($_POST['discount_enabled'] ?? 'AUSENTE'));
-            $this->log("   - _POST['discount_value']: " . ($_POST['discount_value'] ?? 'AUSENTE'));
-            $this->log("   - apiResult['discount']: " . json_encode($apiResult['discount'] ?? 'AUSENTE'));
-        }
-
-        $this->log("=== FIM DETECÇÃO DE DESCONTO PARA BANCO ===");
-
-        // ===== LOG DE DEBUG COMPLETO =====
-        $this->log("DEBUG: Dados completos do installmentRecord para salvar:");
-        $this->log(json_encode($installmentRecord, JSON_UNESCAPED_UNICODE));
-
-        // ===== VALIDAÇÃO ANTES DE SALVAR =====
-        if (empty($installmentRecord['installment_id'])) {
-            throw new Exception('installment_id está vazio - não é possível salvar');
-        }
-
-        if (empty($installmentRecord['customer_id'])) {
-            throw new Exception('customer_id está vazio - não é possível salvar');
-        }
-
-        $this->log("Tentando salvar installmentRecord no banco de dados...");
-
-        // Salvar registro principal da mensalidade
-        $recordId = $this->db->saveInstallmentRecord($installmentRecord);
-
-        if ($recordId) {
-            $this->log("✅ InstallmentRecord salvo com sucesso - ID local: {$recordId}");
-            
-            // Verificar se foi salvo corretamente
-            $verificacao = $this->db->getInstallmentInfo($installmentRecord['installment_id']);
-            if ($verificacao) {
-                $this->log("✅ VERIFICAÇÃO: Mensalidade encontrada no banco - has_discount: " . ($verificacao['has_discount'] ?? 'NULL'));
-                $this->log("✅ VERIFICAÇÃO: discount_value: " . ($verificacao['discount_value'] ?? 'NULL'));
-            } else {
-                $this->log("❌ ERRO: Mensalidade não encontrada no banco após salvar!");
-            }
-        } else {
-            $this->log("❌ ERRO: Falha ao salvar installmentRecord!");
-            throw new Exception('Falha ao salvar dados da mensalidade no banco');
-        }
-        
-        // Salvar primeiro pagamento no banco
-        $paymentSaveData = array_merge($apiResult, [
-            'polo_id' => $installmentRecord['polo_id']
-        ]);
-        $this->db->savePayment($paymentSaveData);
-        
-        // Salvar splits se houver
-        if (!empty($splitsData)) {
-            $this->db->savePaymentSplits($apiResult['id'], $splitsData);
-            $this->log("Splits salvos para o pagamento: " . count($splitsData) . " destinatários");
-        }
-        
-        // Buscar e salvar todas as parcelas criadas
-        $this->syncInstallmentPayments($apiResult['installment']);
-        
-        // Preparar resposta completa
-        $response = [
-            'success' => true,
-            'installment_id' => $apiResult['installment'],
-            'first_payment_id' => $apiResult['id'],
-            'installment_record' => $installmentRecord,
-            'api_response' => $apiResult,
-            'local_record_id' => $recordId,
-            'summary' => [
-                'total_installments' => $installmentData['installmentCount'],
-                'installment_value' => $installmentData['installmentValue'],
-                'total_value' => $installmentRecord['total_value'],
-                'first_due_date' => $paymentData['dueDate'],
-                'billing_type' => $paymentData['billingType'],
-                'splits_configured' => count($splitsData),
-                'has_discount' => $discountDetected,
-                'discount_value' => $discountValue,
-                'discount_per_installment' => $discountValue,
-                'total_discount_potential' => $discountDetected ? $discountValue * $installmentData['installmentCount'] : 0,
-                'discount_deadline' => 'Até o dia do vencimento de cada parcela'
-            ]
-        ];
-        
-        $this->log("=== FIM DEBUG INSTALLMENT MANAGER ===");
-        $this->log("Mensalidade criada com sucesso - Desconto aplicado: " . ($discountDetected ? 'SIM' : 'NÃO'));
-        
-        return $response;
-        
-    } catch (Exception $e) {
-        $this->log("Erro ao criar mensalidade: " . $e->getMessage(), 'ERROR');
-        throw new Exception('Erro ao criar mensalidade: ' . $e->getMessage());
     }
-}
 
         /**
      * ===== NOVA FUNÇÃO: VALIDAR E PREPARAR DESCONTO =====
