@@ -98,23 +98,18 @@ class AsaasSplitPayment {
      * ===== NOVA FUNCIONALIDADE: CRIAR PAGAMENTO PARCELADO COM SPLIT =====
      * Cria mensalidade/parcelamento com configuração de splits
      */
-    public function createInstallmentPaymentWithSplit($paymentData, $splitData, $installmentData) {
+
+     public function createInstallmentPaymentWithSplit($paymentData, $splitData, $installmentData) {
         try {
-            $this->log("Iniciando criação de parcelamento - Parcelas: {$installmentData['installmentCount']} x R$ {$installmentData['installmentValue']}", 'INFO');
+            $installmentCount = (int)$installmentData['installmentCount'];
+            $installmentValue = (float)$installmentData['installmentValue'];
+            
+            $this->log("Iniciando criação de parcelamento - Parcelas: {$installmentCount} x R$ {$installmentValue}", 'INFO');
             
             // ===== LOG DE DEBUG PARA DESCONTO =====
             $this->log("PaymentData recebido: " . json_encode($paymentData), 'DEBUG');
             
-            if (isset($paymentData['discount'])) {
-                $this->log("DESCONTO DETECTADO: " . json_encode($paymentData['discount']), 'INFO');
-            } else {
-                $this->log("NENHUM DESCONTO nos dados do pagamento", 'WARNING');
-            }
-            
             // Validar dados do parcelamento
-            $installmentCount = (int)$installmentData['installmentCount'];
-            $installmentValue = (float)$installmentData['installmentValue'];
-            
             if ($installmentCount < 2 || $installmentCount > 24) {
                 throw new Exception("Número de parcelas deve ser entre 2 e 24");
             }
@@ -125,50 +120,77 @@ class AsaasSplitPayment {
             
             // Validar splits
             $totalPercentage = 0;
-            $totalFixed = 0;
+            $totalFixedValue = 0;
             
             foreach ($splitData as $split) {
-                if (isset($split['percentualValue'])) {
-                    $totalPercentage += $split['percentualValue'];
+                if (empty($split['walletId'])) {
+                    continue;
                 }
-                if (isset($split['fixedValue'])) {
-                    $totalFixed += $split['fixedValue'];
+                
+                if (!empty($split['percentualValue'])) {
+                    $percentage = floatval($split['percentualValue']);
+                    if ($percentage <= 0 || $percentage > 100) {
+                        throw new Exception('Percentual de split deve ser entre 0.01% e 100%');
+                    }
+                    $totalPercentage += $percentage;
+                }
+                
+                if (!empty($split['fixedValue'])) {
+                    $fixedValue = floatval($split['fixedValue']);
+                    if ($fixedValue <= 0) {
+                        throw new Exception('Valor fixo de split deve ser maior que zero');
+                    }
+                    if ($fixedValue >= $installmentValue) {
+                        throw new Exception('Valor fixo não pode ser maior ou igual ao valor da parcela');
+                    }
+                    $totalFixedValue += $fixedValue;
                 }
             }
             
             if ($totalPercentage > 100) {
-                throw new Exception("A soma dos percentuais não pode exceder 100%");
+                throw new Exception('A soma dos percentuais não pode exceder 100%');
             }
             
-            if ($totalFixed >= $installmentValue) {
-                throw new Exception("A soma dos valores fixos não pode ser maior ou igual ao valor da parcela");
+            if ($totalFixedValue >= $installmentValue) {
+                throw new Exception('A soma dos valores fixos não pode ser maior ou igual ao valor da parcela');
+            }
+
+
+            // ===== ADICIONAR DESCONTO SE ESTIVER PRESENTE E VÁLIDO =====
+            if (isset($paymentData['discount']) && 
+                is_array($paymentData['discount']) && 
+                !empty($paymentData['discount']['value']) && 
+                $paymentData['discount']['value'] > 0) {
+                        
+                $data['discount'] = $paymentData['discount'];
+                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
+            } else {
+                $this->log("NENHUM DESCONTO VÁLIDO para adicionar à requisição", 'INFO');
             }
             
-            // ===== PREPARAR DADOS PARA API ASAAS COM DESCONTO =====
+                    // Adicionar campos opcionais
+                    if (isset($paymentData['interest'])) {
+                        $data['interest'] = $paymentData['interest'];
+                    }
+                    
+                    if (isset($paymentData['fine'])) {
+                        $data['fine'] = $paymentData['fine'];
+                    }
+            
+            // ===== PREPARAR DADOS PARA API ASAAS =====
             $data = [
                 'customer' => $paymentData['customer'],
                 'billingType' => $paymentData['billingType'],
-                'dueDate' => $paymentData['dueDate'], // Data do primeiro vencimento
+                'dueDate' => $paymentData['dueDate'],
                 'installmentCount' => $installmentCount,
                 'installmentValue' => $installmentValue,
                 'description' => $paymentData['description'],
-                'split' => $splitData // ASAAS aplica automaticamente o split em todas as parcelas
+                'split' => $splitData,
+                'discount' => $paymentData['discount'],
+                'discount' => $data['discount']
             ];
-            
-            // ===== ADICIONAR DESCONTO À REQUISIÇÃO (CORREÇÃO PRINCIPAL) =====
-            if (isset($paymentData['discount']) && !empty($paymentData['discount'])) {
-                $data['discount'] = $paymentData['discount'];
-                $this->log("DESCONTO ADICIONADO À REQUISIÇÃO ASAAS: " . json_encode($paymentData['discount']), 'SUCCESS');
-            }
-            
-            // Adicionar campos opcionais
-            if (isset($paymentData['interest'])) {
-                $data['interest'] = $paymentData['interest'];
-            }
-            
-            if (isset($paymentData['fine'])) {
-                $data['fine'] = $paymentData['fine'];
-            }
+    
+
             
             // Adicionar informações adicionais sobre mensalidade
             if (isset($installmentData['description_suffix'])) {
@@ -210,6 +232,7 @@ class AsaasSplitPayment {
             throw $e;
         }
     }
+
     
     /**
      * Buscar todas as parcelas de um parcelamento

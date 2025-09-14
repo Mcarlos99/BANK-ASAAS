@@ -256,21 +256,16 @@ class InstallmentManager {
         }
         
         // Validar se desconto não é muito alto (máximo 50% da parcela)
-        $maxDiscount = $installmentValue * 0.50; // 50% do valor da parcela
+        $maxDiscount = $installmentValue * 0.50;
         if ($discountValue > $maxDiscount) {
             throw new Exception("Desconto muito alto. Máximo permitido: R$ " . number_format($maxDiscount, 2, ',', '.') . " (50% da parcela)");
         }
         
-        // Preparar dados do desconto
-        $discountData = [
+        return [
             'value' => $discountValue,
-            'type' => 'FIXED', // Sempre valor fixo
-            'deadline_type' => 'DUE_DATE', // Válido até o vencimento
-            'description' => "Desconto de R$ " . number_format($discountValue, 2, ',', '.') . " válido até o vencimento"
+            'dueDateLimitDays' => 0,
+            'type' => 'FIXED'
         ];
-        
-        $this->log("Desconto validado: R$ {$discountValue} (válido até vencimento)");
-        return $discountData;
     }
 
     /**

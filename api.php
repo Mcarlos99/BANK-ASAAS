@@ -67,46 +67,47 @@ try {
                 $asaas = $dynamicAsaas->getInstance();
                 
                 // Dados básicos
-                $paymentData = $_POST['payment'] ?? [];
-                $installmentData = $_POST['installment'] ?? [];
+        // Garantir que os dados de parcelamento estão corretos
+        $installmentData = [
+            'installmentCount' => (int)($_POST['installment_count'] ?? 0),
+            'installmentValue' => (float)($_POST['installment_value'] ?? 0),
+            'description_suffix' => $_POST['description_suffix'] ?? null
+        ];
                 
                 error_log("Dados iniciais - Payment: " . json_encode($paymentData));
                 error_log("Dados iniciais - Installment: " . json_encode($installmentData));
                 
-                // ===== PROCESSAR DESCONTO PRIMEIRO =====
-                $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
-                error_log("Desconto habilitado: " . ($discountEnabled ? 'SIM' : 'NÃO'));
+
+        // ===== PROCESSAR DESCONTO =====
+        $discountEnabled = !empty($_POST['discount_enabled']) && $_POST['discount_enabled'] === '1';
+        if ($discountEnabled) {
+            $discountValue = floatval($_POST['discount_value'] ?? 0);
+            if ($discountValue > 0) {
+                // Validar desconto
+                $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
+                if ($discountValue >= $installmentValue) {
+                    jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
+                }
                 
-                if ($discountEnabled) {
-                    $discountValue = floatval($_POST['discount_value'] ?? 0);
-                    error_log("Valor do desconto recebido: {$discountValue}");
-                    
-                    if ($discountValue > 0) {
-                        // ===== VALIDAR DESCONTO ANTES DE ADICIONAR =====
-                        $installmentValue = floatval($installmentData['installmentValue'] ?? 0);
-                        
-                        if ($discountValue >= $installmentValue) {
-                            jsonResponse(false, null, 'Desconto não pode ser maior ou igual ao valor da parcela');
-                        }
-                        
-                        $maxDiscountPercentage = defined('MAX_DISCOUNT_PERCENTAGE') ? MAX_DISCOUNT_PERCENTAGE : 50;
-                        $maxDiscountValue = $installmentValue * ($maxDiscountPercentage / 100);
-                        
-                        if ($discountValue > $maxDiscountValue) {
-                            jsonResponse(false, null, "Desconto máximo permitido: R$ " . number_format($maxDiscountValue, 2, ',', '.') . " ({$maxDiscountPercentage}% da parcela)");
-                        }
-                        
-                        // ===== ADICIONAR DESCONTO AOS DADOS DO PAGAMENTO =====
-                        $paymentData['discount'] = [
-                            'value' => $discountValue,
-                            'dueDateLimitDays' => 0, // Válido até o vencimento
-                            'type' => 'FIXED'
-                        ];
-                        
-                        // ===== TAMBÉM ADICIONAR AO INSTALLMENT DATA PARA REFERÊNCIA =====
-                        $installmentData['discount_value'] = $discountValue;
-                        $installmentData['discount_type'] = 'FIXED';
-                        $installmentData['discount_deadline_type'] = 'DUE_DATE';
+                $maxDiscountPercentage = defined('MAX_DISCOUNT_PERCENTAGE') ? MAX_DISCOUNT_PERCENTAGE : 50;
+                $maxDiscountValue = $installmentValue * ($maxDiscountPercentage / 100);
+                
+                if ($discountValue > $maxDiscountValue) {
+                    jsonResponse(false, null, "Desconto máximo permitido: R$ " . number_format($maxDiscountValue, 2, ',', '.') . " ({$maxDiscountPercentage}% da parcela)");
+                }
+                
+                // Adicionar desconto ao paymentData
+                $paymentData['discount'] = [
+                    'value' => $discountValue,
+                    'dueDateLimitDays' => 0,
+                    'type' => 'FIXED'
+                ];
+                
+                // Adicionar referência no installmentData
+                $installmentData['discount_value'] = $discountValue;
+                $installmentData['discount_type'] = 'FIXED';
+            
+        
                         
                         error_log("✅ DESCONTO ADICIONADO! PaymentData: " . json_encode($paymentData['discount']));
                         error_log("✅ DESCONTO ADICIONADO! InstallmentData: discount_value = {$discountValue}");
